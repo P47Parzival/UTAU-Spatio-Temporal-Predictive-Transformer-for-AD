@@ -266,7 +266,7 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 		l = nn.MSELoss(reduction = 'none')
 		windows, targets = convert_to_windows_predictive(dataO, model)
 		dataset = TensorDataset(windows, targets)
-		bs = model.batch if training else windows.shape[0]
+		bs = model.batch if training else 1024 # Batch testing to prevent GAT OOM
 		dataloader = DataLoader(dataset, batch_size = bs)
 		n = epoch + 1
 		l1s, l2s, l3s = [], [], []
@@ -305,14 +305,16 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 			tqdm.write(f'Epoch {epoch},\tRecon = {np.mean(l1s)},\tForecast = {np.mean(l3s)}')
 			return np.mean(l1s), optimizer.param_groups[0]['lr']
 		else:
+			x2s = []
 			for d, _ in dataloader:
 				d = d.to(device)
 				window = d.permute(1, 0, 2)
-				local_bs = window.shape[1]
-				elem = window[-1, :, :].view(1, local_bs, feats)
 				x1, x2, forecast = model(window)
-			loss = l(x2, elem)[0]
-			return loss.detach().cpu().numpy(), x2.detach().cpu().numpy()[0]
+				x2s.append(x2)
+			x2_full = torch.cat(x2s, dim=1) # (1, N, Feats)
+			elem_full = windows[:, -1, :].unsqueeze(0).to(device) # (1, N, Feats)
+			loss = l(x2_full, elem_full)[0]
+			return loss.detach().cpu().numpy(), x2_full.detach().cpu().numpy()[0]
 	elif 'TranAD' in model.name:
 		l = nn.MSELoss(reduction = 'none')
 		data_x = torch.DoubleTensor(data); dataset = TensorDataset(data_x, data_x)
