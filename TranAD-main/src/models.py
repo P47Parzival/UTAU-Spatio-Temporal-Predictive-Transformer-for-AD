@@ -576,26 +576,29 @@ class STP_TranAD(nn.Module):
 		self.log_vars = nn.Parameter(torch.zeros(3)) # [Recon, Prior, Forecast]
 
 	def encode(self, src):
-		batch_size = src.shape[0]
-		# Patching
-		x = src.view(batch_size, self.n_patches, self.patch_size, self.n_feats).permute(0, 1, 3, 2)
+		seq_len, batch_size, n_feats = src.shape
+		# Patching: from (Seq, Batch, Feats) to (Batch, N_patches, Patch_size, Feats)
+		x = src.permute(1, 0, 2)
+		x = x.reshape(batch_size, self.n_patches, self.patch_size, self.n_feats)
+		# Permute to apply linear projection on patch_size dim: (Batch, N_patches, Feats, Patch_size)
+		x = x.permute(0, 1, 3, 2)
 		x = self.patch_proj(x) # (Batch, N_patches, Feats, D_feat)
 		
 		# Spatial GAT
 		x_flat = x.view(-1, self.n_feats, self.d_feat)
-		bg = dgl.batch([self.g] * x_flat.shape[0])
+		bg = dgl.batch([self.g.to(src.device)] * x_flat.shape[0])
 		x_gat = self.gat(bg, x_flat.view(-1, self.d_feat)).view(x_flat.size(0), self.n_feats, -1)
 		
 		# Merge & Temporal
 		x_merged = x_gat.view(batch_size, self.n_patches, -1)
 		x_merged = self.feat_merge(x_merged)
-		x_merged = x_merged.permute(1, 0, 2)
+		x_merged = x_merged.permute(1, 0, 2) # (N_patches, Batch, D_model)
 		x_merged = self.pos_encoder(x_merged)
 		memory = self.transformer_encoder(x_merged)
 		return memory
 
 	def forward(self, src):
-		# src: (Batch, Seq, Feats)
+		# src: (Seq, Batch, Feats)
 		memory = self.encode(src)
 		
 		# Branch A: Reconstruction
@@ -603,14 +606,13 @@ class STP_TranAD(nn.Module):
 		x1 = self.recon_fcn(self.decoder1(tgt, memory))
 		
 		# Phase 2 refiner (adversarial logic)
-		# Conditioning vector c as error in Phase 1
-		c = (x1 - src[:, -1:, :].permute(1, 0, 2)) ** 2
 		# We'll use a simpler conditioning for the hybrid model: 
 		# Inject error into the memory or tgt for the second decoder
 		x2 = self.recon_fcn(self.decoder2(tgt, memory))
 		
 		# Branch B: Forecasting
 		forecast = self.forecaster(memory[-1:]) # (1, Batch, Feats*H)
-		forecast = forecast.view(1, -1, self.H, self.n_feats)
+		forecast = forecast.view(1, -1, self.H, self.n_feats) # (1, Batch, H, Feats)
+		forecast = forecast.squeeze(0).permute(1, 0, 2) # (H, Batch, Feats)
 		
 		return x1, x2, forecast

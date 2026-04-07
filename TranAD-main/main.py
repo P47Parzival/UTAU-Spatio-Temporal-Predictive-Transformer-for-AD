@@ -12,6 +12,8 @@ from src.merlin import *
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import torch.nn as nn
 from time import time
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from pprint import pprint
 # from beepy import beep
 
@@ -68,7 +70,7 @@ def save_model(model, optimizer, scheduler, epoch, accuracy_list):
 def load_model(modelname, dims):
 	import src.models
 	model_class = getattr(src.models, modelname)
-	model = model_class(dims).double()
+	model = model_class(dims).double().to(device)
 	optimizer = torch.optim.AdamW(model.parameters() , lr=model.lr, weight_decay=1e-5)
 	scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 5, 0.9)
 	fname = f'checkpoints/{args.model}_{args.dataset}/model.ckpt'
@@ -260,6 +262,57 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 			loss = l(outputs, data)
 			loss = loss[:, data.shape[1]-feats:data.shape[1]].view(-1, feats)
 			return loss.detach().numpy(), y_pred.detach().numpy()
+	elif 'STP_TranAD' in model.name:
+		l = nn.MSELoss(reduction = 'none')
+		windows, targets = convert_to_windows_predictive(dataO, model)
+		dataset = TensorDataset(windows, targets)
+		bs = model.batch if training else windows.shape[0]
+		dataloader = DataLoader(dataset, batch_size = bs)
+		n = epoch + 1
+		l1s, l2s, l3s = [], [], []
+		if training:
+			for d, t in dataloader:
+				d, t = d.to(device), t.to(device)
+				local_bs = d.shape[0]
+				window = d.permute(1, 0, 2)
+				target_forecast = t.permute(1, 0, 2) # (H, Batch, Feats)
+				elem = window[-1, :, :].view(1, local_bs, feats)
+				
+				# Model returns: Phase1, Phase2, Forecast
+				x1, x2, forecast = model(window)
+				
+				# Loss A: Adversarial Reconstruction (similar to original TranAD logic)
+				l_recon = (1 / n) * torch.mean(l(x1, elem)) + (1 - 1/n) * torch.mean(l(x2, elem))
+				
+				# Loss B: Forecast (NLL-style MSE)
+				l_forecast = torch.mean(l(forecast, target_forecast))
+				
+				# Loss C: Prior (Latent stability loss as proxy for Prior-Association)
+				# Simply encouraging the memory distribution to stay bounded
+				# (In a full implementation, we'd use KL over attention weights)
+				l_prior = torch.mean(torch.abs(x2)) 
+
+				# Option B: Learnable Task Uncertainty Balancing
+				# L = exp(-s1)*L1 + s1 + exp(-s2)*L2 + s2 + ...
+				loss = torch.exp(-model.log_vars[0]) * l_recon + model.log_vars[0] + \
+					   torch.exp(-model.log_vars[1]) * l_prior + model.log_vars[1] + \
+					   torch.exp(-model.log_vars[2]) * l_forecast + model.log_vars[2]
+				
+				l1s.append(l_recon.item()); l2s.append(l_prior.item()); l3s.append(l_forecast.item())
+				optimizer.zero_grad()
+				loss.backward()
+				optimizer.step()
+			tqdm.write(f'Epoch {epoch},\tRecon = {np.mean(l1s)},\tForecast = {np.mean(l3s)}')
+			return np.mean(l1s), optimizer.param_groups[0]['lr']
+		else:
+			for d, _ in dataloader:
+				d = d.to(device)
+				window = d.permute(1, 0, 2)
+				local_bs = window.shape[1]
+				elem = window[-1, :, :].view(1, local_bs, feats)
+				x1, x2, forecast = model(window)
+			loss = l(x2, elem)[0]
+			return loss.detach().cpu().numpy(), x2.detach().cpu().numpy()[0]
 	elif 'TranAD' in model.name:
 		l = nn.MSELoss(reduction = 'none')
 		data_x = torch.DoubleTensor(data); dataset = TensorDataset(data_x, data_x)
@@ -291,57 +344,6 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 				if isinstance(z, tuple): z = z[1]
 			loss = l(z, elem)[0]
 			return loss.detach().numpy(), z.detach().numpy()[0]
-	elif 'STP_TranAD' in model.name:
-		l = nn.MSELoss(reduction = 'none')
-		if training:
-			windows, targets = convert_to_windows_predictive(dataO, model)
-			dataset = TensorDataset(windows, targets)
-		else:
-			data_x = torch.DoubleTensor(data)
-			dataset = TensorDataset(data_x, data_x) # Dummy for test
-		bs = model.batch if training else len(data)
-		dataloader = DataLoader(dataset, batch_size = bs)
-		n = epoch + 1
-		l1s, l2s, l3s = [], [], []
-		if training:
-			for d, t in dataloader:
-				local_bs = d.shape[0]
-				window = d.permute(1, 0, 2)
-				target_forecast = t.permute(1, 0, 2) # (H, Batch, Feats)
-				elem = window[-1, :, :].view(1, local_bs, feats)
-				
-				# Model returns: Phase1, Phase2, Forecast
-				x1, x2, forecast = model(window)
-				
-				# Loss A: Adversarial Reconstruction (similar to original TranAD logic)
-				l_recon = (1 / n) * torch.mean(l(x1, elem)) + (1 - 1/n) * torch.mean(l(x2, elem))
-				
-				# Loss B: Forecast (NLL-style MSE)
-				l_forecast = torch.mean(l(forecast[0], target_forecast))
-				
-				# Loss C: Prior (Latent stability loss as proxy for Prior-Association)
-				# Simply encouraging the memory distribution to stay bounded
-				# (In a full implementation, we'd use KL over attention weights)
-				l_prior = torch.mean(torch.abs(x2)) 
-
-				# Option B: Learnable Task Uncertainty Balancing
-				# L = exp(-s1)*L1 + s1 + exp(-s2)*L2 + s2 + ...
-				loss = torch.exp(-model.log_vars[0]) * l_recon + model.log_vars[0] + \
-					   torch.exp(-model.log_vars[1]) * l_prior + model.log_vars[1] + \
-					   torch.exp(-model.log_vars[2]) * l_forecast + model.log_vars[2]
-				
-				l1s.append(l_recon.item()); l2s.append(l_prior.item()); l3s.append(l_forecast.item())
-				optimizer.zero_grad()
-				loss.backward()
-				optimizer.step()
-			tqdm.write(f'Epoch {epoch},\tRecon = {np.mean(l1s)},\tForecast = {np.mean(l3s)}')
-			return np.mean(l1s), optimizer.param_groups[0]['lr']
-		else:
-			for d, _ in dataloader:
-				window = d.permute(1, 0, 2)
-				x1, x2, forecast = model(window)
-			loss = l(x2, window[-1, :, :].view(1, bs, feats))[0]
-			return loss.detach().numpy(), x2.detach().numpy()[0]
 	else:
 		y_pred = model(data)
 		loss = l(y_pred, data)
@@ -364,13 +366,13 @@ if __name__ == '__main__':
 	## Prepare data
 	trainD, testD = next(iter(train_loader)), next(iter(test_loader))
 	trainO, testO = trainD, testD
-	if model.name in ['Attention', 'DAGMM', 'USAD', 'MSCRED', 'CAE_M', 'GDN', 'MTAD_GAT', 'MAD_GAN'] or 'TranAD' in model.name: 
+	if model.name in ['Attention', 'DAGMM', 'USAD', 'MSCRED', 'CAE_M', 'GDN', 'MTAD_GAT', 'MAD_GAN'] or ('TranAD' in model.name and 'STP_TranAD' not in model.name): 
 		trainD, testD = convert_to_windows(trainD, model), convert_to_windows(testD, model)
 
 	### Training phase
 	if not args.test:
 		print(f'{color.HEADER}Training {args.model} on {args.dataset}{color.ENDC}')
-		num_epochs = 5; e = epoch + 1; start = time()
+		num_epochs = 10; e = epoch + 1; start = time()
 		for e in tqdm(list(range(epoch+1, epoch+num_epochs+1))):
 			lossT, lr = backprop(e, model, trainD, trainO, optimizer, scheduler)
 			accuracy_list.append((lossT, lr))

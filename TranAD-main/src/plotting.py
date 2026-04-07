@@ -4,7 +4,13 @@ import statistics
 import os, torch
 import numpy as np
 
-plt.style.use(['science', 'ieee'])
+try:
+    plt.style.use(['science', 'ieee'])
+except OSError:
+    try:
+        plt.style.use(['seaborn-v0_8-paper'])
+    except OSError:
+        pass  # use matplotlib default style
 plt.rcParams["text.usetex"] = False
 plt.rcParams['figure.figsize'] = 6, 2
 
