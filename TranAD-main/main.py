@@ -266,7 +266,7 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 		l = nn.MSELoss(reduction = 'none')
 		windows, targets = convert_to_windows_predictive(dataO, model)
 		dataset = TensorDataset(windows, targets)
-		bs = model.batch if training else 1024 # Batch testing to prevent GAT OOM
+		bs = model.batch
 		dataloader = DataLoader(dataset, batch_size = bs)
 		n = epoch + 1
 		l1s, l2s, l3s = [], [], []
@@ -306,11 +306,12 @@ def backprop(epoch, model, data, dataO, optimizer, scheduler, training = True):
 			return np.mean(l1s), optimizer.param_groups[0]['lr']
 		else:
 			x2s = []
-			for d, _ in dataloader:
-				d = d.to(device)
-				window = d.permute(1, 0, 2)
-				x1, x2, forecast = model(window)
-				x2s.append(x2)
+			with torch.no_grad():
+				for d, _ in dataloader:
+					d = d.to(device)
+					window = d.permute(1, 0, 2)
+					x1, x2, forecast = model(window)
+					x2s.append(x2)
 			x2_full = torch.cat(x2s, dim=1) # (1, N, Feats)
 			elem_full = windows[:, -1, :].unsqueeze(0).to(device) # (1, N, Feats)
 			loss = l(x2_full, elem_full)[0]
@@ -394,12 +395,13 @@ if __name__ == '__main__':
 		plotter(f'{args.model}_{args.dataset}', testO, y_pred, loss, labels)
 
 	### Scores
-	df = pd.DataFrame()
+	df_list = []
 	lossT, _ = backprop(0, model, trainD, trainO, optimizer, scheduler, training=False)
 	for i in range(loss.shape[1]):
 		lt, l, ls = lossT[:, i], loss[:, i], labels[:, i]
 		result, pred = pot_eval(lt, l, ls); preds.append(pred)
-		df = df.append(result, ignore_index=True)
+		df_list.append(result)
+	df = pd.DataFrame(df_list)
 	# preds = np.concatenate([i.reshape(-1, 1) + 0 for i in preds], axis=1)
 	# pd.DataFrame(preds, columns=[str(i) for i in range(10)]).to_csv('labels.csv')
 	lossTfinal, lossFinal = np.mean(lossT, axis=1), np.mean(loss, axis=1)
