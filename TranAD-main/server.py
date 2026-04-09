@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from collections import deque
 import os
+import gc
 
 from src.models import STP_TranAD
 
@@ -29,21 +30,33 @@ MODEL_NAME = 'STP_TranAD'
 DATASET = 'SMD'
 model = None
 optimizer = None
-live_buffer = deque(maxlen=100) # Holds exactly 1 window
+# Keep one extra frame so we can forecast current from previous model.n_window points.
+live_buffer = deque(maxlen=101)
 data_condition = asyncio.Condition()
+model_lock = asyncio.Lock() # Safeguards streaming thread against dimension swapping crashes
 
 class TelemetryData(BaseModel):
     timestamp_ms: int
     sensors: list[float]
+    
+class SwapRequest(BaseModel):
+    dataset: str
 
-def init_model():
-    print("Loading STP-TranAD Model...")
-    folder = f'checkpoints/{MODEL_NAME}_{DATASET}/'
+def init_model(target_ds=None):
+    if target_ds is None:
+        target_ds = DATASET
+    print(f"Loading STP-TranAD Model for {target_ds}...")
+    folder = f'checkpoints/{MODEL_NAME}_{target_ds}/'
     ckpt_path = os.path.join(folder, 'model.ckpt')
     
-    # Load dataset to extract metadata (feats) and simulate live inputs
-    test_arr = np.load(f'processed/{DATASET}/machine-1-1_test.npy')
-    labels_arr = np.load(f'processed/{DATASET}/machine-1-1_labels.npy')
+    # Identify target dynamic files
+    if target_ds == 'SMD':
+        test_arr = np.load(f'processed/{target_ds}/machine-1-1_test.npy')
+    elif target_ds == 'MSL':
+        test_arr = np.load(f'processed/{target_ds}/C-1_test.npy')
+    else: # SMAP
+        test_arr = np.load(f'processed/{target_ds}/A-1_test.npy')
+        
     feats = test_arr.shape[1]
     
     # Initialize Model fundamentally equivalent to Training initialization
@@ -66,27 +79,61 @@ async def startup_event():
     model, optimizer, feats_dim = init_model()
     
     # Pre-fill buffer with mean zero-state to prevent startup crashes
-    for _ in range(100):
+    for _ in range(101):
         live_buffer.append([0.0] * feats_dim)
 
 @app.post("/ingest")
 async def ingest_telemetry(payload: TelemetryData):
-    # Live ingestion simulacrum (e.g., from Kafka)
-    async with data_condition:
-        live_buffer.append(payload.sensors)
-        data_condition.notify_all()
+    async with model_lock:
+        if len(payload.sensors) != feats_dim:
+            return {"status": "dropped", "reason": "dimension mismatch during swap"}
+            
+        async with data_condition:
+            live_buffer.append(payload.sensors)
+            data_condition.notify_all()
     return {"status": "ingested"}
+
+@app.get("/status")
+async def get_status():
+    return {"active_dataset": DATASET, "dimensions": feats_dim}
+
+@app.post("/change_dataset")
+async def trigger_dataset_swap(req: SwapRequest):
+    global DATASET, model, optimizer, feats_dim
+    if req.dataset not in ['SMD', 'MSL', 'SMAP']:
+        return {"error": "Invalid Dataset"}
+
+    async with model_lock:
+        print(f"--- INITIATING HOT-SWAP TO {req.dataset} ---")
+        DATASET = req.dataset
+        
+        # Flush VRAM gracefully
+        del model
+        del optimizer
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        model, optimizer, feats_dim = init_model(target_ds=req.dataset)
+        
+        # Flush baseline frames to buffer
+        live_buffer.clear()
+        for _ in range(101):
+            live_buffer.append([0.0] * feats_dim)
+            
+    return {"status": "success", "new_dataset": DATASET, "new_dim": feats_dim}
 
 @app.post("/calibrate")
 async def trigger_online_learning():
     """Concept Drift handler: dynamically shifts the baseline threshold using physical feedback."""
-    if len(live_buffer) < 100:
+    if len(live_buffer) < model.n_window + 1:
         return {"status": "buffering"}
     
     print("[DRIFT DETECTED] Calibrating model to accept new variance...")
     model.train() # Enable decoders for backprop
     
-    window = torch.DoubleTensor(list(live_buffer)).unsqueeze(0).permute(1, 0, 2).to(device)
+    # Use previous model window (exclude newest point) to stay consistent with training setup.
+    window = torch.DoubleTensor(list(live_buffer)[:-1]).unsqueeze(0).permute(1, 0, 2).to(device)
     
     # One small epoch to absorb the new pattern
     optimizer.zero_grad()
@@ -116,27 +163,31 @@ async def websocket_endpoint(websocket: WebSocket):
             # Wait for dynamic data to arrive in ingestion buffer
             async with data_condition:
                 await data_condition.wait()
-                # Snap the current 100-frame window securely
+                # Snap the current buffered sequence securely
                 current_window = list(live_buffer)
             
-            if len(current_window) < model.n_window:
+            if len(current_window) < model.n_window + 1:
                 continue
 
-            window_tensor = torch.DoubleTensor(current_window).unsqueeze(0).permute(1, 0, 2).to(device)
-            
-            with torch.no_grad():
-                x1, x2, forecast = model(window_tensor)
-            
-            # Ground truth metric calculations
-            elem = window_tensor[-1, :, :].view(1, 1, feats_dim)
-            recon_loss = l(x2, elem)[0].detach().cpu().numpy()[0]
-            
-            overall_loss = float(np.mean(recon_loss))
-            
-            # Predict precisely 1 step into the forecast
-            pred_future = forecast[:, 0, :].detach().cpu().numpy()[0]
+            # Causal one-step prediction: history -> current actual.
+            history_window = current_window[:-1]
             actual_sensors = current_window[-1]
+            window_tensor = torch.DoubleTensor(history_window).unsqueeze(0).permute(1, 0, 2).to(device)
             
+            async with model_lock:
+                with torch.no_grad():
+                    x1, x2, forecast = model(window_tensor)
+                
+                # Ground truth metric calculations
+                elem = window_tensor[-1, :, :].view(1, 1, feats_dim)
+                recon_loss = l(x2, elem)[0].detach().cpu().numpy()[0]
+                
+                overall_loss = float(np.mean(recon_loss))
+                
+                # Use true predictive head output (horizon step 0) for dashboard forecast curves.
+                # forecast shape: (H, Batch, Feats)
+                pred_future = forecast[0, 0, :].detach().cpu().numpy()
+                
             # Dynamically compile the dictionary of all sensors based on reality
             sensors_actual = {}
             sensors_forecast = {}
