@@ -7,18 +7,14 @@ interface DataPoint {
   system_loss: number;
   is_anomalous: boolean;
   threshold: number;
-  s1_actual: number;
-  s2_actual: number;
-  s3_actual: number;
-  s1_forecast: number;
-  s2_forecast: number;
-  s3_forecast: number;
+  [key: string]: number | boolean;
 }
 
 export default function App() {
   const [data, setData] = useState<DataPoint[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [systemState, setSystemState] = useState<'HEALTHY' | 'WARNING' | 'CRITICAL'>('HEALTHY');
+  const [dimensions, setDimensions] = useState<number>(0);
   
   useEffect(() => {
     // Connect to FastAPI Backend
@@ -30,18 +26,17 @@ export default function App() {
     ws.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       
+      if (payload.dimensions && payload.dimensions !== dimensions) {
+          setDimensions(payload.dimensions);
+      }
+      
       const newPoint: DataPoint = {
         tick: payload.tick,
         system_loss: payload.system_loss,
         is_anomalous: payload.is_anomalous,
         threshold: payload.threshold,
-        s1_actual: payload.sensors.s1_actual,
-        s2_actual: payload.sensors.s2_actual,
-        s3_actual: payload.sensors.s3_actual,
-        // Since forecast provides an array of H steps, we grab the 1st step for immediate overlay comparison
-        s1_forecast: payload.forecast.s1_forecast[0] || 0,
-        s2_forecast: payload.forecast.s2_forecast[0] || 0,
-        s3_forecast: payload.forecast.s3_forecast[0] || 0,
+        ...payload.sensors,
+        ...payload.forecast
       };
 
       setData(prev => {
@@ -168,45 +163,43 @@ export default function App() {
       </div>
 
       {/* Sensor Multivariant Forecast Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {[1, 2, 3].map(sensorId => (
-          <div key={sensorId} className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl">
-            <h2 className="text-sm uppercase tracking-widest text-slate-400 mb-4">Sensor {sensorId} Forecast vs Actual</h2>
-            <div className="h-[200px] w-full">
+      <h2 className="text-xl font-bold tracking-widest text-slate-300 mb-6 flex items-center">
+        <Server className="w-5 h-5 mr-3 text-slate-500" />
+        Dynamic Asset Telemetry ({dimensions} Active Dimensions)
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        {Array.from({ length: dimensions }).map((_, i) => (
+          <div key={i} className="bg-slate-900 border border-slate-800 rounded-lg p-4 hover:border-slate-700 transition-colors">
+            <h2 className="text-[10px] sm:text-xs uppercase tracking-widest text-slate-400 mb-2 truncate">Metric {i} Forecast vs Actual</h2>
+            <div className="h-[120px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                  <YAxis domain={['auto', 'auto']} stroke="#475569" tick={{fill: '#64748b', fontSize: 10}} width={30} />
-                  <Tooltip wrapperStyle={{ outline: 'none' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '8px' }} />
+                  <YAxis domain={['auto', 'auto']} stroke="#334155" tick={{fill: '#475569', fontSize: 10}} width={30} tickFormatter={(val) => val.toFixed(2)} />
+                  <Tooltip 
+                    wrapperStyle={{ outline: 'none' }} 
+                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '4px', fontSize: '12px' }} 
+                  />
                   {/* Actual physical behavior */}
                   <Line 
                     type="stepAfter" 
-                    dataKey={`s${sensorId}_actual`} 
-                    stroke="#94a3b8" 
-                    strokeWidth={2} 
+                    dataKey={`s${i}_actual`} 
+                    stroke="#64748b" 
+                    strokeWidth={1.5} 
                     dot={false} 
                     isAnimationActive={false}
                   />
                   {/* Model Forecast trajectory */}
                   <Line 
                     type="monotone" 
-                    dataKey={`s${sensorId}_forecast`} 
+                    dataKey={`s${i}_forecast`} 
                     stroke="#10b981" 
-                    strokeWidth={2} 
-                    strokeDasharray="5 5"
+                    strokeWidth={1.5} 
+                    strokeDasharray="4 4"
                     dot={false} 
                     isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
-            <div className="flex justify-between items-center mt-4 text-xs">
-              <span className="flex items-center text-slate-400">
-                <span className="w-3 h-3 rounded-full bg-slate-400 mr-2"></span> Actual True Value
-              </span>
-              <span className="flex items-center text-emerald-500">
-                <span className="w-3 h-3 rounded-full bg-emerald-500 mr-2"></span> Next-Step Forecast
-              </span>
             </div>
           </div>
         ))}

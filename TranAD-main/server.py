@@ -133,24 +133,25 @@ async def websocket_endpoint(websocket: WebSocket):
             
             overall_loss = float(np.mean(recon_loss))
             
-            pred_future = forecast[:, 0, :3].detach().cpu().numpy().tolist()
-            actual_sensors = current_window[-1][:3]
+            # Predict precisely 1 step into the forecast
+            pred_future = forecast[:, 0, :].detach().cpu().numpy()[0]
+            actual_sensors = current_window[-1]
+            
+            # Dynamically compile the dictionary of all sensors based on reality
+            sensors_actual = {}
+            sensors_forecast = {}
+            for i in range(feats_dim):
+                sensors_actual[f"s{i}_actual"] = float(actual_sensors[i])
+                sensors_forecast[f"s{i}_forecast"] = float(pred_future[i])
 
             payload = {
                 "tick": current_tick,
                 "system_loss": overall_loss,
                 "is_anomalous": overall_loss > 0.05, 
                 "threshold": 0.05, 
-                "sensors": {
-                    "s1_actual": float(actual_sensors[0]),
-                    "s2_actual": float(actual_sensors[1]),
-                    "s3_actual": float(actual_sensors[2]),
-                },
-                "forecast": {
-                    "s1_forecast": [float(p[0]) for p in pred_future],
-                    "s2_forecast": [float(p[1]) for p in pred_future],
-                    "s3_forecast": [float(p[2]) for p in pred_future],
-                }
+                "dimensions": feats_dim, # Tell React how many DOM elements to spawn
+                "sensors": sensors_actual,
+                "forecast": sensors_forecast
             }
             
             await websocket.send_text(json.dumps(payload))
