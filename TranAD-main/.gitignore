@@ -10,6 +10,8 @@ data/MSDS/test.csv
 # C extensions
 *.so
 
+data/CMAPPS
+
 # Distribution / packaging
 .Python
 build/

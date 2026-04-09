@@ -1,6 +1,7 @@
 import pickle
 import os
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 from src.models import *
 from src.constants import *
@@ -16,6 +17,11 @@ from time import time
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from pprint import pprint
 # from beepy import beep
+
+# Phase 2 fused scoring controls
+PHASE2_WEIGHT_RECON = float(os.getenv('PHASE2_WEIGHT_RECON', '0.55'))
+PHASE2_WEIGHT_FORECAST = float(os.getenv('PHASE2_WEIGHT_FORECAST', '0.30'))
+PHASE2_WEIGHT_CORR = float(os.getenv('PHASE2_WEIGHT_CORR', '0.15'))
 
 def convert_to_windows(data, model):
 	windows = []; w_size = model.n_window
@@ -36,6 +42,93 @@ def convert_to_windows_predictive(data, model):
 		windows.append(w)
 		targets.append(t)
 	return torch.stack(windows), torch.stack(targets)
+
+def _safe_corrcoef(x: np.ndarray) -> np.ndarray:
+	if x.ndim != 2 or x.shape[1] <= 1:
+		return np.eye(max(1, x.shape[1]), dtype=np.float64)
+	c = np.corrcoef(x, rowvar=False)
+	c = np.nan_to_num(c, nan=0.0, posinf=0.0, neginf=0.0)
+	if c.ndim == 0:
+		return np.eye(1, dtype=np.float64)
+	np.fill_diagonal(c, 1.0)
+	return c
+
+def _corr_shift_from_window(window_np: np.ndarray) -> float:
+	if window_np.ndim != 2 or window_np.shape[0] < 8:
+		return 0.0
+	midpoint = window_np.shape[0] // 2
+	prev_block = window_np[:midpoint]
+	curr_block = window_np[midpoint:]
+	c_prev = _safe_corrcoef(prev_block)
+	c_curr = _safe_corrcoef(curr_block)
+	diff = c_curr - c_prev
+	denom = float(diff.size) if diff.size else 1.0
+	return float(np.linalg.norm(diff, ord='fro') / denom)
+
+def compute_stp_component_arrays(model, dataO):
+	l = nn.MSELoss(reduction='none')
+	feats = dataO.shape[1]
+	windows, targets = convert_to_windows_predictive(dataO, model)
+	dataset = TensorDataset(windows, targets)
+	dataloader = DataLoader(dataset, batch_size=model.batch)
+
+	recon_chunks, forecast_chunks, corr_scores, pred_chunks = [], [], [], []
+	with torch.no_grad():
+		for d, t in dataloader:
+			d = d.to(device)
+			t = t.to(device)
+			local_bs = d.shape[0]
+			window = d.permute(1, 0, 2)
+			target_forecast = t.permute(1, 0, 2)
+			elem = window[-1, :, :].view(1, local_bs, feats)
+
+			_, x2, forecast = model(window)
+			recon_batch = l(x2, elem)[0].detach().cpu().numpy()
+			forecast_batch = l(forecast[0], target_forecast[0]).detach().cpu().numpy()
+			pred_batch = x2[0].detach().cpu().numpy()
+
+			recon_chunks.append(recon_batch)
+			forecast_chunks.append(forecast_batch)
+			pred_chunks.append(pred_batch)
+
+			d_cpu = d.detach().cpu().numpy()
+			for sample_window in d_cpu:
+				corr_scores.append(_corr_shift_from_window(sample_window))
+
+	recon_arr = np.concatenate(recon_chunks, axis=0)
+	forecast_arr = np.concatenate(forecast_chunks, axis=0)
+	pred_arr = np.concatenate(pred_chunks, axis=0)
+	corr_arr = np.asarray(corr_scores, dtype=np.float64)
+	return recon_arr, forecast_arr, corr_arr, pred_arr
+
+def fuse_stp_component_arrays(train_recon, train_forecast, train_corr, test_recon, test_forecast, test_corr):
+	eps = 1e-8
+
+	recon_mu = np.mean(train_recon, axis=0)
+	recon_sigma = np.std(train_recon, axis=0) + eps
+	forecast_mu = np.mean(train_forecast, axis=0)
+	forecast_sigma = np.std(train_forecast, axis=0) + eps
+	corr_mu = float(np.mean(train_corr))
+	corr_sigma = float(np.std(train_corr) + eps)
+
+	train_recon_z = np.maximum((train_recon - recon_mu) / recon_sigma, 0.0)
+	test_recon_z = np.maximum((test_recon - recon_mu) / recon_sigma, 0.0)
+	train_forecast_z = np.maximum((train_forecast - forecast_mu) / forecast_sigma, 0.0)
+	test_forecast_z = np.maximum((test_forecast - forecast_mu) / forecast_sigma, 0.0)
+	train_corr_z = np.maximum((train_corr - corr_mu) / corr_sigma, 0.0).reshape(-1, 1)
+	test_corr_z = np.maximum((test_corr - corr_mu) / corr_sigma, 0.0).reshape(-1, 1)
+
+	fused_train = (
+		PHASE2_WEIGHT_RECON * train_recon_z +
+		PHASE2_WEIGHT_FORECAST * train_forecast_z +
+		PHASE2_WEIGHT_CORR * train_corr_z
+	)
+	fused_test = (
+		PHASE2_WEIGHT_RECON * test_recon_z +
+		PHASE2_WEIGHT_FORECAST * test_forecast_z +
+		PHASE2_WEIGHT_CORR * test_corr_z
+	)
+	return fused_train, fused_test
 
 def load_dataset(dataset):
 	folder = os.path.join(output_folder, dataset)
@@ -387,7 +480,16 @@ if __name__ == '__main__':
 	torch.zero_grad = True
 	model.eval()
 	print(f'{color.HEADER}Testing {args.model} on {args.dataset}{color.ENDC}')
-	loss, y_pred = backprop(0, model, testD, testO, optimizer, scheduler, training=False)
+	if 'STP_TranAD' in model.name:
+		test_recon, test_forecast, test_corr, y_pred = compute_stp_component_arrays(model, testO)
+		train_recon, train_forecast, train_corr, _ = compute_stp_component_arrays(model, trainO)
+		lossT, loss = fuse_stp_component_arrays(
+			train_recon, train_forecast, train_corr,
+			test_recon, test_forecast, test_corr,
+		)
+	else:
+		loss, y_pred = backprop(0, model, testD, testO, optimizer, scheduler, training=False)
+		lossT, _ = backprop(0, model, trainD, trainO, optimizer, scheduler, training=False)
 
 	### Plot curves
 	if not args.test:
@@ -396,7 +498,6 @@ if __name__ == '__main__':
 
 	### Scores
 	df_list = []
-	lossT, _ = backprop(0, model, trainD, trainO, optimizer, scheduler, training=False)
 	for i in range(loss.shape[1]):
 		lt, l, ls = lossT[:, i], loss[:, i], labels[:, i]
 		result, pred = pot_eval(lt, l, ls); preds.append(pred)

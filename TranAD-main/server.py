@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from collections import deque
 import os
 import gc
+import time
 
 from src.models import STP_TranAD
 
@@ -35,12 +36,241 @@ live_buffer = deque(maxlen=101)
 data_condition = asyncio.Condition()
 model_lock = asyncio.Lock() # Safeguards streaming thread against dimension swapping crashes
 
+# Ingestion controls
+INGEST_MAX_BACKWARD_MS = int(os.getenv("INGEST_MAX_BACKWARD_MS", "2000"))
+INGEST_MAX_CLOCK_SKEW_MS = int(os.getenv("INGEST_MAX_CLOCK_SKEW_MS", "60000"))
+INGEST_MIN_STATS_WINDOW = int(os.getenv("INGEST_MIN_STATS_WINDOW", "20"))
+INGEST_OUTLIER_ZSCORE = float(os.getenv("INGEST_OUTLIER_ZSCORE", "12.0"))
+INGEST_DEGRADED_DROPOUT_RATIO = float(os.getenv("INGEST_DEGRADED_DROPOUT_RATIO", "0.2"))
+
+# Phase 2 scoring controls
+FUSED_WEIGHT_RECON = float(os.getenv("FUSED_WEIGHT_RECON", "0.55"))
+FUSED_WEIGHT_FORECAST = float(os.getenv("FUSED_WEIGHT_FORECAST", "0.30"))
+FUSED_WEIGHT_CORR = float(os.getenv("FUSED_WEIGHT_CORR", "0.15"))
+FUSED_THRESHOLD_DEFAULT = float(os.getenv("FUSED_THRESHOLD_DEFAULT", "1.5"))
+FUSED_THRESHOLD_PERCENTILE = float(os.getenv("FUSED_THRESHOLD_PERCENTILE", "97.5"))
+FUSED_THRESHOLD_WARMUP = int(os.getenv("FUSED_THRESHOLD_WARMUP", "120"))
+
+# Ingestion runtime state
+last_ingest_timestamp_ms = None
+last_valid_vector = []
+sensor_dropout_streak = []
+ingest_stats = {
+    "total": 0,
+    "accepted": 0,
+    "dropped_dimension_mismatch": 0,
+    "dropped_invalid_timestamp": 0,
+    "out_of_order": 0,
+    "clock_skew": 0,
+    "imputed_values": 0,
+    "outlier_values": 0,
+    "degraded_events": 0,
+}
+last_ingest_meta = {
+    "imputed_ratio": 0.0,
+    "imputed_count": 0,
+    "outlier_count": 0,
+    "degraded": False,
+}
+
+score_histories = {
+    "recon": deque(maxlen=2000),
+    "forecast": deque(maxlen=2000),
+    "corr": deque(maxlen=2000),
+    "fused": deque(maxlen=2000),
+}
+last_score_meta = {
+    "recon_score": 0.0,
+    "forecast_score": 0.0,
+    "corr_score": 0.0,
+    "fused_score": 0.0,
+    "threshold": FUSED_THRESHOLD_DEFAULT,
+}
+
 class TelemetryData(BaseModel):
     timestamp_ms: int
     sensors: list[float]
     
 class SwapRequest(BaseModel):
     dataset: str
+
+def _reset_ingestion_state(dim: int):
+    global last_ingest_timestamp_ms, last_valid_vector, sensor_dropout_streak, last_ingest_meta, last_score_meta
+    last_ingest_timestamp_ms = None
+    last_valid_vector = [0.0] * dim
+    sensor_dropout_streak = [0] * dim
+    last_ingest_meta = {
+        "imputed_ratio": 0.0,
+        "imputed_count": 0,
+        "outlier_count": 0,
+        "degraded": False,
+    }
+    for key in ingest_stats:
+        ingest_stats[key] = 0
+
+    for k in score_histories:
+        score_histories[k].clear()
+    last_score_meta = {
+        "recon_score": 0.0,
+        "forecast_score": 0.0,
+        "corr_score": 0.0,
+        "fused_score": 0.0,
+        "threshold": FUSED_THRESHOLD_DEFAULT,
+    }
+
+def _safe_corrcoef(x: np.ndarray) -> np.ndarray:
+    if x.ndim != 2 or x.shape[1] <= 1:
+        return np.eye(max(1, x.shape[1]), dtype=np.float64)
+    c = np.corrcoef(x, rowvar=False)
+    c = np.nan_to_num(c, nan=0.0, posinf=0.0, neginf=0.0)
+    if c.ndim == 0:
+        return np.eye(1, dtype=np.float64)
+    np.fill_diagonal(c, 1.0)
+    return c
+
+def _correlation_shift_score(history_window: np.ndarray) -> float:
+    if history_window.ndim != 2 or history_window.shape[0] < 8:
+        return 0.0
+    midpoint = history_window.shape[0] // 2
+    prev_block = history_window[:midpoint]
+    curr_block = history_window[midpoint:]
+    c_prev = _safe_corrcoef(prev_block)
+    c_curr = _safe_corrcoef(curr_block)
+    diff = c_curr - c_prev
+    denom = float(diff.size) if diff.size else 1.0
+    return float(np.linalg.norm(diff, ord='fro') / denom)
+
+def _positive_zscore(value: float, history: deque) -> float:
+    hist = np.asarray(history, dtype=np.float64)
+    if hist.size < 30:
+        return max(0.0, float(value))
+    mu = float(np.mean(hist))
+    sigma = float(np.std(hist) + 1e-8)
+    return max(0.0, float((value - mu) / sigma))
+
+def _compute_fused_score(recon_vec: np.ndarray, forecast_vec: np.ndarray, corr_shift: float):
+    global last_score_meta
+    recon_score = float(np.mean(recon_vec))
+    forecast_score = float(np.mean(forecast_vec))
+    corr_score = float(corr_shift)
+
+    score_histories["recon"].append(recon_score)
+    score_histories["forecast"].append(forecast_score)
+    score_histories["corr"].append(corr_score)
+
+    recon_z = _positive_zscore(recon_score, score_histories["recon"])
+    forecast_z = _positive_zscore(forecast_score, score_histories["forecast"])
+    corr_z = _positive_zscore(corr_score, score_histories["corr"])
+
+    fused_score = (
+        FUSED_WEIGHT_RECON * recon_z +
+        FUSED_WEIGHT_FORECAST * forecast_z +
+        FUSED_WEIGHT_CORR * corr_z
+    )
+    score_histories["fused"].append(fused_score)
+
+    if len(score_histories["fused"]) >= FUSED_THRESHOLD_WARMUP:
+        threshold = float(np.percentile(np.asarray(score_histories["fused"], dtype=np.float64), FUSED_THRESHOLD_PERCENTILE))
+    else:
+        threshold = FUSED_THRESHOLD_DEFAULT
+
+    last_score_meta = {
+        "recon_score": recon_score,
+        "forecast_score": forecast_score,
+        "corr_score": corr_score,
+        "fused_score": float(fused_score),
+        "threshold": threshold,
+    }
+    return float(fused_score), threshold
+
+def _validate_timestamp(timestamp_ms: int):
+    global last_ingest_timestamp_ms
+    now_ms = int(time.time() * 1000)
+
+    try:
+        ts = int(timestamp_ms)
+    except (TypeError, ValueError):
+        ingest_stats["dropped_invalid_timestamp"] += 1
+        return False, "invalid timestamp"
+
+    if abs(now_ms - ts) > INGEST_MAX_CLOCK_SKEW_MS:
+        ingest_stats["clock_skew"] += 1
+
+    if last_ingest_timestamp_ms is not None:
+        if ts < last_ingest_timestamp_ms - INGEST_MAX_BACKWARD_MS:
+            ingest_stats["dropped_invalid_timestamp"] += 1
+            return False, "timestamp too old"
+        if ts < last_ingest_timestamp_ms:
+            ingest_stats["out_of_order"] += 1
+
+    if last_ingest_timestamp_ms is None or ts > last_ingest_timestamp_ms:
+        last_ingest_timestamp_ms = ts
+    return True, "ok"
+
+def _sanitize_sensors(raw_sensors: list[float], expected_dim: int):
+    global last_valid_vector, sensor_dropout_streak, last_ingest_meta
+
+    if len(raw_sensors) != expected_dim:
+        ingest_stats["dropped_dimension_mismatch"] += 1
+        return None, "dimension mismatch"
+
+    history_mean = None
+    history_std = None
+    if len(live_buffer) >= INGEST_MIN_STATS_WINDOW:
+        history_arr = np.asarray(live_buffer, dtype=np.float64)
+        history_mean = history_arr.mean(axis=0)
+        history_std = history_arr.std(axis=0)
+
+    sanitized = [0.0] * expected_dim
+    imputed_indices = []
+    outlier_indices = []
+
+    for idx in range(expected_dim):
+        raw_value = raw_sensors[idx]
+        should_impute = False
+
+        try:
+            value = float(raw_value)
+            if not np.isfinite(value):
+                should_impute = True
+        except (TypeError, ValueError):
+            should_impute = True
+
+        if should_impute:
+            value = last_valid_vector[idx]
+            imputed_indices.append(idx)
+        elif history_mean is not None and history_std is not None and history_std[idx] > 1e-9:
+            z_score = abs((value - history_mean[idx]) / (history_std[idx] + 1e-9))
+            if z_score > INGEST_OUTLIER_ZSCORE:
+                outlier_indices.append(idx)
+
+        sanitized[idx] = value
+
+    imputed_index_set = set(imputed_indices)
+    for idx in range(expected_dim):
+        if idx in imputed_index_set:
+            sensor_dropout_streak[idx] += 1
+        else:
+            sensor_dropout_streak[idx] = 0
+        last_valid_vector[idx] = sanitized[idx]
+
+    imputed_count = len(imputed_indices)
+    outlier_count = len(outlier_indices)
+    imputed_ratio = imputed_count / float(expected_dim) if expected_dim else 0.0
+    degraded = imputed_ratio >= INGEST_DEGRADED_DROPOUT_RATIO
+
+    ingest_stats["imputed_values"] += imputed_count
+    ingest_stats["outlier_values"] += outlier_count
+    if degraded:
+        ingest_stats["degraded_events"] += 1
+
+    last_ingest_meta = {
+        "imputed_ratio": imputed_ratio,
+        "imputed_count": imputed_count,
+        "outlier_count": outlier_count,
+        "degraded": degraded,
+    }
+    return sanitized, "ok"
 
 def init_model(target_ds=None):
     if target_ds is None:
@@ -77,6 +307,7 @@ def init_model(target_ds=None):
 async def startup_event():
     global model, optimizer, feats_dim
     model, optimizer, feats_dim = init_model()
+    _reset_ingestion_state(feats_dim)
     
     # Pre-fill buffer with mean zero-state to prevent startup crashes
     for _ in range(101):
@@ -84,18 +315,49 @@ async def startup_event():
 
 @app.post("/ingest")
 async def ingest_telemetry(payload: TelemetryData):
+    ingest_stats["total"] += 1
     async with model_lock:
-        if len(payload.sensors) != feats_dim:
-            return {"status": "dropped", "reason": "dimension mismatch during swap"}
+        timestamp_ok, timestamp_reason = _validate_timestamp(payload.timestamp_ms)
+        if not timestamp_ok:
+            return {"status": "dropped", "reason": timestamp_reason}
+
+        sanitized_sensors, sanitize_reason = _sanitize_sensors(payload.sensors, feats_dim)
+        if sanitized_sensors is None:
+            return {"status": "dropped", "reason": sanitize_reason}
             
         async with data_condition:
-            live_buffer.append(payload.sensors)
+            live_buffer.append(sanitized_sensors)
             data_condition.notify_all()
-    return {"status": "ingested"}
+
+    ingest_stats["accepted"] += 1
+    return {
+        "status": "ingested",
+        "degraded": last_ingest_meta["degraded"],
+        "imputed_count": last_ingest_meta["imputed_count"],
+        "outlier_count": last_ingest_meta["outlier_count"],
+    }
 
 @app.get("/status")
 async def get_status():
-    return {"active_dataset": DATASET, "dimensions": feats_dim}
+    return {
+        "active_dataset": DATASET,
+        "dimensions": feats_dim,
+        "ingest": {
+            "totals": ingest_stats,
+            "last": last_ingest_meta,
+            "last_timestamp_ms": last_ingest_timestamp_ms,
+            "degraded_mode": last_ingest_meta["degraded"],
+        },
+        "scoring": {
+            "weights": {
+                "recon": FUSED_WEIGHT_RECON,
+                "forecast": FUSED_WEIGHT_FORECAST,
+                "corr": FUSED_WEIGHT_CORR,
+            },
+            "last": last_score_meta,
+            "fused_history_size": len(score_histories["fused"]),
+        },
+    }
 
 @app.post("/change_dataset")
 async def trigger_dataset_swap(req: SwapRequest):
@@ -115,6 +377,7 @@ async def trigger_dataset_swap(req: SwapRequest):
             torch.cuda.empty_cache()
             
         model, optimizer, feats_dim = init_model(target_ds=req.dataset)
+        _reset_ingestion_state(feats_dim)
         
         # Flush baseline frames to buffer
         live_buffer.clear()
@@ -181,12 +444,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Ground truth metric calculations
                 elem = window_tensor[-1, :, :].view(1, 1, feats_dim)
                 recon_loss = l(x2, elem)[0].detach().cpu().numpy()[0]
-                
-                overall_loss = float(np.mean(recon_loss))
-                
+
                 # Use true predictive head output (horizon step 0) for dashboard forecast curves.
                 # forecast shape: (H, Batch, Feats)
                 pred_future = forecast[0, 0, :].detach().cpu().numpy()
+
+            forecast_loss = np.square(pred_future - np.asarray(actual_sensors, dtype=np.float64))
+            corr_shift = _correlation_shift_score(np.asarray(history_window, dtype=np.float64))
+            fused_score, fused_threshold = _compute_fused_score(recon_loss, forecast_loss, corr_shift)
                 
             # Dynamically compile the dictionary of all sensors based on reality
             sensors_actual = {}
@@ -197,12 +462,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
             payload = {
                 "tick": current_tick,
-                "system_loss": overall_loss,
-                "is_anomalous": overall_loss > 0.05, 
-                "threshold": 0.05, 
+                "system_loss": fused_score,
+                "is_anomalous": fused_score > fused_threshold,
+                "threshold": fused_threshold,
                 "dimensions": feats_dim, # Tell React how many DOM elements to spawn
                 "sensors": sensors_actual,
-                "forecast": sensors_forecast
+                "forecast": sensors_forecast,
+                "score_components": {
+                    "recon": last_score_meta["recon_score"],
+                    "forecast": last_score_meta["forecast_score"],
+                    "corr": last_score_meta["corr_score"],
+                },
             }
             
             await websocket.send_text(json.dumps(payload))

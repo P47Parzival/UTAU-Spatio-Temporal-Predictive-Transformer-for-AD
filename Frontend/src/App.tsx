@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { AlertTriangle, CheckCircle, Activity, Server, Database, ShieldAlert } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { AlertTriangle, CheckCircle, Activity, Server, Database, ShieldAlert, RefreshCw } from 'lucide-react';
 
 interface DataPoint {
   tick: number;
@@ -15,10 +15,12 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [systemState, setSystemState] = useState<'HEALTHY' | 'WARNING' | 'CRITICAL'>('HEALTHY');
   const [dimensions, setDimensions] = useState<number>(0);
+  const [activeDataset, setActiveDataset] = useState('SMD');
+  const [isTransitioning, setIsTransitioning] = useState(false);
   
   useEffect(() => {
     // Connect to FastAPI Backend
-    const ws = new WebSocket('ws://localhost:8000/ws/stream');
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws/stream');
     
     ws.onopen = () => setIsConnected(true);
     ws.onclose = () => setIsConnected(false);
@@ -56,7 +58,6 @@ export default function App() {
 
     return () => ws.close();
   }, []);
-
   const dismissAlarm = async () => {
     try {
       await fetch('http://localhost:8000/calibrate', { method: 'POST' });
@@ -64,6 +65,28 @@ export default function App() {
       console.log('Model weights successfully re-calibrated for concept drift.');
     } catch (err) {
       console.error('Failed to calibrate model', err);
+    }
+  };
+
+  const changeDataset = async (ds: string) => {
+    if (ds === activeDataset) return;
+    
+    setIsTransitioning(true);
+    // Clear array to prevent UI dimension mismatch crashes
+    setData([]);
+    setDimensions(0);
+    setActiveDataset(ds);
+    
+    try {
+      await fetch('http://127.0.0.1:8000/change_dataset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataset: ds })
+      });
+    } catch(e) {
+      console.error('Failed to hot-swap dataset:', e);
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
@@ -88,10 +111,28 @@ export default function App() {
           </div>
           <div className={`px-4 py-1.5 rounded-full border ${isConnected ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-slate-700 bg-slate-800 text-slate-400'} flex items-center space-x-2`}>
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`} />
-            <span className="text-sm font-bold">{isConnected ? 'LIVE STREAMING' : 'DISCONNECTED'}</span>
+            <span className="text-sm font-bold">{isConnected && !isTransitioning ? 'LIVE STREAMING' : 'DISCONNECTED'}</span>
           </div>
         </div>
       </header>
+
+      {/* Target Dataset Swapping Tabs */}
+      <div className="flex space-x-2 mb-8 bg-slate-900 border border-slate-800 p-1 rounded-lg w-max shadow-2xl">
+        {['SMD', 'MSL', 'SMAP'].map((ds) => (
+          <button
+            key={ds}
+            onClick={() => changeDataset(ds)}
+            disabled={isTransitioning}
+            className={`px-6 py-2 rounded-md text-sm font-bold tracking-widest transition-all ${
+              activeDataset === ds
+              ? 'bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            {ds}
+          </button>
+        ))}
+      </div>
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
@@ -163,47 +204,59 @@ export default function App() {
       </div>
 
       {/* Sensor Multivariant Forecast Charts */}
-      <h2 className="text-xl font-bold tracking-widest text-slate-300 mb-6 flex items-center">
+      <h2 className="text-xl font-bold tracking-widest text-slate-300 mb-6 flex items-center mt-10">
         <Server className="w-5 h-5 mr-3 text-slate-500" />
         Dynamic Asset Telemetry ({dimensions} Active Dimensions)
       </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {Array.from({ length: dimensions }).map((_, i) => (
-          <div key={i} className="bg-slate-900 border border-slate-800 rounded-lg p-4 hover:border-slate-700 transition-colors">
-            <h2 className="text-[10px] sm:text-xs uppercase tracking-widest text-slate-400 mb-2 truncate">Metric {i} Forecast vs Actual</h2>
-            <div className="h-[120px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data}>
-                  <YAxis domain={['auto', 'auto']} stroke="#334155" tick={{fill: '#475569', fontSize: 10}} width={30} tickFormatter={(val) => val.toFixed(2)} />
-                  <Tooltip 
-                    wrapperStyle={{ outline: 'none' }} 
-                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '4px', fontSize: '12px' }} 
-                  />
-                  {/* Actual physical behavior */}
-                  <Line 
-                    type="stepAfter" 
-                    dataKey={`s${i}_actual`} 
-                    stroke="#64748b" 
-                    strokeWidth={1.5} 
-                    dot={false} 
-                    isAnimationActive={false}
-                  />
-                  {/* Model Forecast trajectory */}
-                  <Line 
-                    type="monotone" 
-                    dataKey={`s${i}_forecast`} 
-                    stroke="#10b981" 
-                    strokeWidth={1.5} 
-                    strokeDasharray="4 4"
-                    dot={false} 
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+      
+      {isTransitioning ? (
+        <div className="flex flex-col items-center justify-center p-20 border border-slate-800 border-dashed rounded-xl bg-slate-900/50">
+           <RefreshCw className="w-12 h-12 text-emerald-500 animate-spin mb-4" />
+           <h2 className="text-slate-400 tracking-widest font-bold">RECONFIGURING STP-TRANAD WEIGHTS...</h2>
+           <p className="text-slate-600 text-sm mt-2">Mounting Architecture & Data Shapes for {activeDataset}</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          {Array.from({ length: dimensions }).map((_, i) => (
+            <div key={i} className="bg-slate-900 border border-slate-800 rounded-lg p-4 hover:border-slate-700 transition-colors">
+              <h2 className="text-[10px] sm:text-xs uppercase tracking-widest text-slate-400 mb-2 truncate">Metric {i} Forecast vs Actual</h2>
+              <div className="h-[120px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data}>
+                    <YAxis yAxisId="actual" domain={['auto', 'auto']} stroke="#334155" tick={{fill: '#475569', fontSize: 10}} width={30} tickFormatter={(val) => val.toFixed(2)} />
+                    <YAxis yAxisId="forecast" orientation="right" hide domain={['auto', 'auto']} />
+                    <Tooltip 
+                      wrapperStyle={{ outline: 'none' }} 
+                      contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '4px', fontSize: '12px' }} 
+                    />
+                    {/* Actual physical behavior */}
+                    <Line 
+                      yAxisId="actual"
+                      type="stepAfter" 
+                      dataKey={`s${i}_actual`} 
+                      stroke="#64748b" 
+                      strokeWidth={1.5} 
+                      dot={false} 
+                      isAnimationActive={false}
+                    />
+                    {/* Model Forecast trajectory */}
+                    <Line 
+                      yAxisId="forecast"
+                      type="monotone" 
+                      dataKey={`s${i}_forecast`} 
+                      stroke="#10b981" 
+                      strokeWidth={1.5} 
+                      strokeDasharray="4 4"
+                      dot={false} 
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
