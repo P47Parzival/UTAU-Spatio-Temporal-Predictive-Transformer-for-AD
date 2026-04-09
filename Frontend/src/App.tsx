@@ -7,7 +7,41 @@ interface DataPoint {
   system_loss: number;
   is_anomalous: boolean;
   threshold: number;
-  [key: string]: number | boolean;
+  score_components?: {
+    recon: number;
+    forecast: number;
+    corr: number;
+  };
+  alert_explanation?: AlertExplanation;
+  [key: string]: number | boolean | AlertExplanation | { recon: number; forecast: number; corr: number } | undefined;
+}
+
+interface Contributor {
+  sensor: string;
+  importance: number;
+  contribution_pct: number;
+  recon_error: number;
+  forecast_error: number;
+}
+
+interface HistoricalSimilar {
+  tick: number;
+  dataset: string;
+  anomaly_type: string;
+  severity: number;
+  similarity: number;
+  summary: string;
+}
+
+interface AlertExplanation {
+  severity_score: number;
+  severity_level: 'info' | 'warning' | 'critical';
+  confidence: number;
+  anomaly_type: 'point_anomaly' | 'contextual_anomaly' | 'collective_anomaly';
+  duration_steps: number;
+  top_contributors: Contributor[];
+  historical_similar: HistoricalSimilar[];
+  investigation_hints: string[];
 }
 
 export default function App() {
@@ -17,6 +51,8 @@ export default function App() {
   const [dimensions, setDimensions] = useState<number>(0);
   const [activeDataset, setActiveDataset] = useState('SMD');
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [alertExplanation, setAlertExplanation] = useState<AlertExplanation | null>(null);
+  const [scoreComponents, setScoreComponents] = useState<{ recon: number; forecast: number; corr: number } | null>(null);
   
   useEffect(() => {
     // Connect to FastAPI Backend
@@ -37,9 +73,18 @@ export default function App() {
         system_loss: payload.system_loss,
         is_anomalous: payload.is_anomalous,
         threshold: payload.threshold,
+        score_components: payload.score_components,
+        alert_explanation: payload.alert_explanation,
         ...payload.sensors,
         ...payload.forecast
       };
+
+      if (payload.alert_explanation) {
+        setAlertExplanation(payload.alert_explanation as AlertExplanation);
+      }
+      if (payload.score_components) {
+        setScoreComponents(payload.score_components as { recon: number; forecast: number; corr: number });
+      }
 
       setData(prev => {
         const next = [...prev, newPoint];
@@ -94,6 +139,12 @@ export default function App() {
     if (systemState === 'CRITICAL') return 'text-red-500';
     if (systemState === 'WARNING') return 'text-yellow-500';
     return 'text-green-500';
+  };
+
+  const severityBadgeClass = (level?: string) => {
+    if (level === 'critical') return 'bg-red-500/20 text-red-300 border-red-500/40';
+    if (level === 'warning') return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40';
+    return 'bg-blue-500/20 text-blue-300 border-blue-500/40';
   };
 
   return (
@@ -151,6 +202,30 @@ export default function App() {
               )}
             </div>
             <h3 className={`text-3xl text-center font-bold tracking-widest ${getStatusColor()}`}>{systemState}</h3>
+
+            {alertExplanation && (
+              <div className="mt-5 space-y-3">
+                <div className={`text-[10px] uppercase tracking-widest border rounded px-2 py-1 inline-block ${severityBadgeClass(alertExplanation.severity_level)}`}>
+                  {alertExplanation.severity_level} | Severity {alertExplanation.severity_score}
+                </div>
+                <div className="text-xs text-slate-300">
+                  Type: <span className="text-slate-100 font-semibold">{alertExplanation.anomaly_type.replace('_', ' ')}</span>
+                </div>
+                <div className="text-xs text-slate-300">
+                  Confidence: <span className="text-slate-100 font-semibold">{(alertExplanation.confidence * 100).toFixed(1)}%</span>
+                </div>
+                <div className="text-xs text-slate-300">
+                  Active Steps: <span className="text-slate-100 font-semibold">{alertExplanation.duration_steps}</span>
+                </div>
+                {scoreComponents && (
+                  <div className="text-[11px] text-slate-400 leading-5">
+                    <div>Recon: {scoreComponents.recon.toFixed(6)}</div>
+                    <div>Forecast: {scoreComponents.forecast.toFixed(6)}</div>
+                    <div>Corr: {scoreComponents.corr.toFixed(6)}</div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           
           <div className="mt-8 space-y-3">
@@ -174,7 +249,7 @@ export default function App() {
           <div className="flex justify-between items-center mb-6">
             <h2 className="flex items-center space-x-2 text-sm uppercase tracking-widest text-slate-400">
               <Server className="w-4 h-4" />
-              <span>GAT Spatio-Temporal Reconstruction Error</span>
+              <span>Fused Anomaly Score (Recon + Forecast + Corr)</span>
             </h2>
             <span className="text-xs bg-slate-800 px-3 py-1 rounded text-slate-300">Evaluating 38 Dimensions</span>
           </div>
@@ -188,7 +263,7 @@ export default function App() {
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
                   itemStyle={{ color: '#e2e8f0' }}
                 />
-                <ReferenceLine y={0.05} label="Threshold" stroke="#ef4444" strokeDasharray="3 3" />
+                <ReferenceLine y={data.length ? Number(data[data.length - 1].threshold) : 0} label="Threshold" stroke="#ef4444" strokeDasharray="3 3" />
                 <Line 
                   type="monotone" 
                   dataKey="system_loss" 
@@ -202,6 +277,53 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {alertExplanation && (
+        <section className="mb-8 grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
+            <h3 className="text-xs uppercase tracking-widest text-slate-400 mb-3">Top Contributors</h3>
+            <div className="space-y-2">
+              {alertExplanation.top_contributors.slice(0, 5).map((c) => (
+                <div key={c.sensor} className="text-xs border border-slate-800 rounded px-3 py-2 bg-slate-950/40">
+                  <div className="flex justify-between text-slate-200">
+                    <span className="font-semibold">{c.sensor}</span>
+                    <span>{c.contribution_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="text-slate-500 mt-1">Recon {c.recon_error.toFixed(6)} | Forecast {c.forecast_error.toFixed(6)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
+            <h3 className="text-xs uppercase tracking-widest text-slate-400 mb-3">Historical Similar</h3>
+            {alertExplanation.historical_similar.length === 0 ? (
+              <div className="text-xs text-slate-500">No similar anomaly in cache yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {alertExplanation.historical_similar.map((h) => (
+                  <div key={`${h.tick}-${h.dataset}`} className="text-xs border border-slate-800 rounded px-3 py-2 bg-slate-950/40">
+                    <div className="flex justify-between text-slate-200">
+                      <span>{h.dataset} @ tick {h.tick}</span>
+                      <span>{(h.similarity * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="text-slate-500 mt-1">{h.summary}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
+            <h3 className="text-xs uppercase tracking-widest text-slate-400 mb-3">Investigation Path</h3>
+            <ul className="space-y-2 text-xs text-slate-300">
+              {alertExplanation.investigation_hints.map((hint, idx) => (
+                <li key={`hint-${idx}`} className="border border-slate-800 rounded px-3 py-2 bg-slate-950/40">{hint}</li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
 
       {/* Sensor Multivariant Forecast Charts */}
       <h2 className="text-xl font-bold tracking-widest text-slate-300 mb-6 flex items-center mt-10">

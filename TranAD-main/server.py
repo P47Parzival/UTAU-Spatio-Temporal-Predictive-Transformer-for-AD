@@ -10,6 +10,7 @@ from collections import deque
 import os
 import gc
 import time
+import math
 
 from src.models import STP_TranAD
 
@@ -79,6 +80,9 @@ score_histories = {
     "corr": deque(maxlen=2000),
     "fused": deque(maxlen=2000),
 }
+
+recent_alert_history = deque(maxlen=500)
+anomaly_streak = 0
 last_score_meta = {
     "recon_score": 0.0,
     "forecast_score": 0.0,
@@ -121,7 +125,11 @@ def _reset_ingestion_state(dim: int):
 def _safe_corrcoef(x: np.ndarray) -> np.ndarray:
     if x.ndim != 2 or x.shape[1] <= 1:
         return np.eye(max(1, x.shape[1]), dtype=np.float64)
-    c = np.corrcoef(x, rowvar=False)
+    centered = x - np.mean(x, axis=0, keepdims=True)
+    cov = np.dot(centered.T, centered) / max(1, x.shape[0] - 1)
+    std = np.sqrt(np.clip(np.diag(cov), 1e-8, None))
+    denom = np.outer(std, std)
+    c = cov / denom
     c = np.nan_to_num(c, nan=0.0, posinf=0.0, neginf=0.0)
     if c.ndim == 0:
         return np.eye(1, dtype=np.float64)
@@ -182,6 +190,83 @@ def _compute_fused_score(recon_vec: np.ndarray, forecast_vec: np.ndarray, corr_s
         "threshold": threshold,
     }
     return float(fused_score), threshold
+
+def _severity_and_confidence(fused_score: float, threshold: float):
+    if threshold <= 1e-8:
+        ratio = 0.0
+    else:
+        ratio = fused_score / threshold
+    sev = int(max(0, min(100, round(100.0 / (1.0 + math.exp(-4.0 * (ratio - 1.0)))))))
+    if ratio >= 1.2:
+        level = "critical"
+    elif ratio >= 0.8:
+        level = "warning"
+    else:
+        level = "info"
+    confidence = float(max(0.0, min(1.0, 1.0 / (1.0 + math.exp(-6.0 * (ratio - 1.0))))))
+    return sev, level, confidence
+
+def _classify_anomaly_type(recon_score: float, forecast_score: float, corr_score: float):
+    if corr_score > max(recon_score, forecast_score):
+        return "collective_anomaly"
+    if forecast_score > (recon_score * 1.25):
+        return "contextual_anomaly"
+    return "point_anomaly"
+
+def _rank_contributors(recon_vec: np.ndarray, forecast_vec: np.ndarray, top_k: int = 5):
+    blended = (0.65 * recon_vec) + (0.35 * forecast_vec)
+    total = float(np.sum(blended) + 1e-12)
+    order = np.argsort(blended)[::-1][:top_k]
+    ranked = []
+    for idx in order:
+        contribution_pct = float((blended[idx] / total) * 100.0)
+        ranked.append({
+            "sensor": f"s{int(idx)}",
+            "importance": float(blended[idx]),
+            "contribution_pct": contribution_pct,
+            "recon_error": float(recon_vec[idx]),
+            "forecast_error": float(forecast_vec[idx]),
+        })
+    return ranked, blended
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray):
+    denom = float((np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12)
+    return float(np.dot(a, b) / denom)
+
+def _get_similar_history(blended_vec: np.ndarray, top_k: int = 3):
+    candidates = []
+    for item in recent_alert_history:
+        if not item.get("is_anomalous", False):
+            continue
+        sim = _cosine_similarity(blended_vec, item["blended_vec"])
+        candidates.append((sim, item))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    results = []
+    for sim, item in candidates[:top_k]:
+        results.append({
+            "tick": item["tick"],
+            "dataset": item["dataset"],
+            "anomaly_type": item["anomaly_type"],
+            "severity": item["severity"],
+            "similarity": float(max(0.0, min(1.0, sim))),
+            "summary": f"{item['anomaly_type']} with top sensor {item['top_sensor']}",
+        })
+    return results
+
+def _investigation_hints(anomaly_type: str, contributors: list[dict], corr_score: float):
+    hints = []
+    if contributors:
+        top = contributors[0]
+        hints.append(f"Inspect {top['sensor']} first; highest contribution {top['contribution_pct']:.1f}%.")
+    if anomaly_type == "collective_anomaly":
+        hints.append(f"Check cross-sensor dependency break; correlation shift score={corr_score:.6f}.")
+    elif anomaly_type == "contextual_anomaly":
+        hints.append("Validate temporal context and operating mode; forecast mismatch is dominant.")
+    else:
+        hints.append("Investigate sudden local spike and recent actuator/control actions.")
+    if len(contributors) > 1:
+        hints.append(f"Compare {contributors[0]['sensor']} with {contributors[1]['sensor']} for coupled deviation.")
+    return hints[:4]
 
 def _validate_timestamp(timestamp_ms: int):
     global last_ingest_timestamp_ms
@@ -414,6 +499,7 @@ async def trigger_online_learning():
 
 @app.websocket("/ws/stream")
 async def websocket_endpoint(websocket: WebSocket):
+    global anomaly_streak
     await websocket.accept()
     active_connections.append(websocket)
     print("UI Client Connected to Dynamic Stream")
@@ -452,6 +538,31 @@ async def websocket_endpoint(websocket: WebSocket):
             forecast_loss = np.square(pred_future - np.asarray(actual_sensors, dtype=np.float64))
             corr_shift = _correlation_shift_score(np.asarray(history_window, dtype=np.float64))
             fused_score, fused_threshold = _compute_fused_score(recon_loss, forecast_loss, corr_shift)
+            is_anomalous = fused_score > fused_threshold
+            if is_anomalous:
+                anomaly_streak += 1
+            else:
+                anomaly_streak = 0
+
+            severity_score, severity_level, confidence = _severity_and_confidence(fused_score, fused_threshold)
+            anomaly_type = _classify_anomaly_type(
+                last_score_meta["recon_score"],
+                last_score_meta["forecast_score"],
+                last_score_meta["corr_score"],
+            )
+            top_contributors, blended_vec = _rank_contributors(recon_loss, forecast_loss, top_k=5)
+            similar_history = _get_similar_history(blended_vec, top_k=3)
+            hints = _investigation_hints(anomaly_type, top_contributors, last_score_meta["corr_score"])
+
+            recent_alert_history.append({
+                "tick": current_tick,
+                "dataset": DATASET,
+                "is_anomalous": is_anomalous,
+                "anomaly_type": anomaly_type,
+                "severity": severity_score,
+                "top_sensor": top_contributors[0]["sensor"] if top_contributors else "n/a",
+                "blended_vec": blended_vec,
+            })
                 
             # Dynamically compile the dictionary of all sensors based on reality
             sensors_actual = {}
@@ -463,7 +574,7 @@ async def websocket_endpoint(websocket: WebSocket):
             payload = {
                 "tick": current_tick,
                 "system_loss": fused_score,
-                "is_anomalous": fused_score > fused_threshold,
+                "is_anomalous": is_anomalous,
                 "threshold": fused_threshold,
                 "dimensions": feats_dim, # Tell React how many DOM elements to spawn
                 "sensors": sensors_actual,
@@ -472,6 +583,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     "recon": last_score_meta["recon_score"],
                     "forecast": last_score_meta["forecast_score"],
                     "corr": last_score_meta["corr_score"],
+                },
+                "alert_explanation": {
+                    "severity_score": severity_score,
+                    "severity_level": severity_level,
+                    "confidence": confidence,
+                    "anomaly_type": anomaly_type,
+                    "duration_steps": anomaly_streak,
+                    "top_contributors": top_contributors,
+                    "historical_similar": similar_history,
+                    "investigation_hints": hints,
                 },
             }
             
