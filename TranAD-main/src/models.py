@@ -3,8 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pickle
-import dgl
-from dgl.nn import GATConv
+import numpy as np
 from torch.nn import TransformerEncoder
 from torch.nn import TransformerDecoder
 from src.dlutils import *
@@ -542,12 +541,9 @@ class STP_TranAD(nn.Module):
 		# 1. Patching & Projection
 		self.patch_proj = nn.Linear(self.patch_size, self.d_feat)
 		
-		# 2. GAT (Spatial Topology Learning)
-		src_ids = np.repeat(np.arange(feats), feats)
-		dst_ids = np.tile(np.arange(feats), feats)
-		self.g = dgl.graph((torch.tensor(src_ids), torch.tensor(dst_ids)))
-		self.g = dgl.add_self_loop(self.g)
-		self.gat = GATConv(self.d_feat, self.d_feat, num_heads=1)
+		# 2. Spatial Topology Learning (Replaced DGL GAT with pure PyTorch equivalents)
+		# A GAT over a fully connected graph is mathematically equivalent to Self-Attention
+		self.gat = nn.MultiheadAttention(embed_dim=self.d_feat, num_heads=1, batch_first=True)
 		self.feat_merge = nn.Linear(feats * self.d_feat, self.d_model)
 
 		# 3. Transformer Encoder (Temporal Modeling)
@@ -584,14 +580,11 @@ class STP_TranAD(nn.Module):
 		x = x.permute(0, 1, 3, 2)
 		x = self.patch_proj(x) # (Batch, N_patches, Feats, D_feat)
 		
-		# Spatial GAT
-		x_flat = x.view(-1, self.n_feats, self.d_feat)
-		bg = dgl.batch([self.g.to(src.device)] * x_flat.shape[0])
-		x_gat = self.gat(bg, x_flat.view(-1, self.d_feat)).view(x_flat.size(0), self.n_feats, -1)
-		
-		# Merge & Temporal
-		x_merged = x_gat.view(batch_size, self.n_patches, -1)
-		x_merged = self.feat_merge(x_merged)
+		# Spatial Topology (Pure PyTorch Self-Attention across features)
+		x_flat = x.view(-1, self.n_feats, self.d_feat) # (Batch * N_patches, Feats, D_feat)
+		x_gat, _ = self.gat(x_flat, x_flat, x_flat)
+		x_gat = x_gat.reshape(batch_size, self.n_patches, -1)
+		x_merged = self.feat_merge(x_gat)
 		x_merged = x_merged.permute(1, 0, 2) # (N_patches, Batch, D_model)
 		x_merged = self.pos_encoder(x_merged)
 		memory = self.transformer_encoder(x_merged)

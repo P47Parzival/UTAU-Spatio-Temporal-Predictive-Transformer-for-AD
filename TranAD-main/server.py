@@ -51,7 +51,7 @@ def init_model():
     opt = torch.optim.AdamW(m.parameters(), lr=1e-5, weight_decay=1e-5)
     
     if os.path.exists(ckpt_path):
-        checkpoint = torch.load(ckpt_path, map_location=device)
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
         m.load_state_dict(checkpoint['model_state_dict'])
         opt.load_state_dict(checkpoint['optimizer_state_dict'])
         print(f"Pre-trained checkpoint loaded successfully from {ckpt_path}.")
