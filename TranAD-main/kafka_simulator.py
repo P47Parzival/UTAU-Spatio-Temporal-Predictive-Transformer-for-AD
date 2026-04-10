@@ -48,6 +48,10 @@ def simulate_stream():
                         test_arr = np.load(f'processed/{active_dataset}/C-1_test.npy')
                     elif active_dataset == 'SMAP':
                         test_arr = np.load(f'processed/{active_dataset}/A-1_test.npy')
+                    elif active_dataset == 'synthetic':
+                        test_arr = np.load(f'processed/{active_dataset}/test.npy')
+                    else:
+                        raise ValueError(f"Unsupported active dataset: {active_dataset}")
                         
                     current_dataset = active_dataset
                     total_len = len(test_arr)

@@ -220,3 +220,72 @@ SMD
  'precision': 0.811279817665078,
  'recall': 0.9999999866310163,
  'threshold': 0.24662294266460735}
+
+
+Creating new model: STP_TranAD
+Training STP_TranAD on synthetic
+Epoch 0,        Recon = 0.03775501784044422,    Forecast = 0.03523038086453041
+Epoch 1,        Recon = 0.09038971807328018,    Forecast = 0.02631335726285475
+Epoch 2,        Recon = 0.14145998534261842,    Forecast = 0.021513159704434598
+Epoch 3,        Recon = 0.17383314735978656,    Forecast = 0.013667854849795049
+Epoch 4,        Recon = 0.19533344032732566,    Forecast = 0.010296823254751624
+Epoch 5,        Recon = 0.21010977412744145,    Forecast = 0.010036719771828954
+Epoch 6,        Recon = 0.2188120280288904,     Forecast = 0.009891788596946298
+Epoch 7,        Recon = 0.20126809518893118,    Forecast = 0.009759439073515959
+Epoch 8,        Recon = 0.19944311860964553,    Forecast = 0.009594711638169098
+Epoch 9,        Recon = 0.19944641615767622,    Forecast = 0.009412292015565638
+100%|██████████████████████████████████████████████████████████████████████████| 10/10 [03:00<00:00, 18.07s/it]
+Training time:   180.6761 s
+Testing STP_TranAD on synthetic
+C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\numpy\lib\_function_base_impl.py:2922: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\numpy\lib\_function_base_impl.py:2923: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
+  warnings.warn(
+C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
+  warnings.warn(
+C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
+  warnings.warn(
+          f1  precision  recall     TP      TN    FP   FN   ROC/AUC  threshold
+0   0.948612   0.902256     1.0  120.0  9867.0  13.0  0.0  0.999342   3.263467
+1   0.794697   0.659341     1.0   60.0  9909.0  31.0  0.0  0.998441   2.860634
+2   0.933847   0.875912     1.0  120.0  9863.0  17.0  0.0  0.999140   2.988022
+3   0.895517   0.810811     1.0  120.0  9852.0  28.0  0.0  0.998583   3.237911
+4   0.805364   0.674157     1.0   60.0  9911.0  29.0  0.0  0.998541   3.087127
+5   0.912542   0.839161     1.0  120.0  9857.0  23.0  0.0  0.998836   3.176918
+6   0.863304   0.759494     1.0   60.0  9921.0  19.0  0.0  0.999044   3.254080
+7   0.845065   0.731707     1.0   60.0  9918.0  22.0  0.0  0.998893   2.975841
+8   0.794697   0.659341     1.0   60.0  9909.0  31.0  0.0  0.998441   3.098129
+9   0.935060   0.878049     1.0  180.0  9795.0  25.0  0.0  0.998727   3.260273
+10  0.895517   0.810811     1.0   60.0  9926.0  14.0  0.0  0.999296   3.189201
+11  0.731703   0.576923     1.0   60.0  9896.0  44.0  0.0  0.997787   3.055935
+12  0.952376   0.909091     1.0  120.0  9868.0  12.0  0.0  0.999393   3.455971
+13  0.000000   0.000000     0.0    0.0  9978.0  22.0  0.0       NaN   3.363313
+14  0.963850   0.930232     1.0  120.0  9871.0   9.0  0.0  0.999545   4.283867
+15  0.769226   0.625000     1.0   60.0  9904.0  36.0  0.0  0.998189   3.176737
+16  0.947363   0.900000     1.0  180.0  9800.0  20.0  0.0  0.998982   3.871148
+17  0.888884   0.800000     1.0   60.0  9925.0  15.0  0.0  0.999245   3.419870
+18  0.975605   0.952381     1.0   60.0  9937.0   3.0  0.0  0.999849   4.345913
+19  0.930227   0.869565     1.0   60.0  9931.0   9.0  0.0  0.999547   3.837048
+20  0.941171   0.888889     1.0  120.0  9865.0  15.0  0.0  0.999241   4.056583
+26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
+27  0.000000   0.000000     0.0    0.0  9983.0  17.0  0.0       NaN   4.131053
+26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
+26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
+27  0.000000   0.000000     0.0    0.0  9983.0  17.0  0.0       NaN   4.131053
+28  0.967737   0.937500     1.0  120.0  9872.0   8.0  0.0  0.999595   4.061369
+29  0.833328   0.714286     1.0   60.0  9916.0  24.0  0.0  0.998793   3.645196
+{'FN': np.int64(0),
+ 'FP': np.int64(13),
+ 'Hit@100%': np.float64(1.0),
+ 'Hit@150%': np.float64(1.0),
+ 'NDCG@100%': np.float64(0.9999999999999999),
+ 'NDCG@150%': np.float64(0.9999999999999999),
+ 'ROC/AUC': np.float64(0.9993172268907563),
+ 'TN': np.int64(9507),
+ 'TP': np.int64(480),
+ 'f1': np.float64(0.9866342406580769),
+ 'precision': np.float64(0.9736308118938984),
+ 'recall': np.float64(0.9999999791666672),
+ 'threshold': np.float64(3.0733723783346716)}

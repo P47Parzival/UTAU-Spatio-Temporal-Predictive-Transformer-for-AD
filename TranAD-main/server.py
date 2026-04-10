@@ -369,8 +369,12 @@ def init_model(target_ds=None):
         test_arr = np.load(f'processed/{target_ds}/machine-1-1_test.npy')
     elif target_ds == 'MSL':
         test_arr = np.load(f'processed/{target_ds}/C-1_test.npy')
-    else: # SMAP
+    elif target_ds == 'SMAP':
         test_arr = np.load(f'processed/{target_ds}/A-1_test.npy')
+    elif target_ds == 'synthetic':
+        test_arr = np.load(f'processed/{target_ds}/test.npy')
+    else:
+        raise ValueError(f"Unsupported dataset for STP server: {target_ds}")
         
     feats = test_arr.shape[1]
     
@@ -447,7 +451,7 @@ async def get_status():
 @app.post("/change_dataset")
 async def trigger_dataset_swap(req: SwapRequest):
     global DATASET, model, optimizer, feats_dim
-    if req.dataset not in ['SMD', 'MSL', 'SMAP']:
+    if req.dataset not in ['SMD', 'MSL', 'SMAP', 'synthetic']:
         return {"error": "Invalid Dataset"}
 
     async with model_lock:

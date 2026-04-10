@@ -53,6 +53,12 @@ export default function App() {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [alertExplanation, setAlertExplanation] = useState<AlertExplanation | null>(null);
   const [scoreComponents, setScoreComponents] = useState<{ recon: number; forecast: number; corr: number } | null>(null);
+  const datasetTabs = [
+    { label: 'SMD', value: 'SMD' },
+    { label: 'MSL', value: 'MSL' },
+    { label: 'SMAP', value: 'SMAP' },
+    { label: 'Synthetic', value: 'synthetic' },
+  ];
   
   useEffect(() => {
     // Connect to FastAPI Backend
@@ -169,18 +175,18 @@ export default function App() {
 
       {/* Target Dataset Swapping Tabs */}
       <div className="flex space-x-2 mb-8 bg-slate-900 border border-slate-800 p-1 rounded-lg w-max shadow-2xl">
-        {['SMD', 'MSL', 'SMAP'].map((ds) => (
+        {datasetTabs.map((tab) => (
           <button
-            key={ds}
-            onClick={() => changeDataset(ds)}
+            key={tab.value}
+            onClick={() => changeDataset(tab.value)}
             disabled={isTransitioning}
             className={`px-6 py-2 rounded-md text-sm font-bold tracking-widest transition-all ${
-              activeDataset === ds
+              activeDataset === tab.value
               ? 'bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
             }`}
           >
-            {ds}
+            {tab.label}
           </button>
         ))}
       </div>
