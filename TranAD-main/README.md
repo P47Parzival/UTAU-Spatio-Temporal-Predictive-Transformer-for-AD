@@ -153,6 +153,28 @@ Verification:
 - Check script summary counts and non-zero `write_points_succeeded`.
 - Confirm backend `GET /status` still reports healthy `influx` state.
 
+## Phase 8 RL Suggestion-Only Policy Flow
+Phase 8 introduces RL-driven policy suggestions without applying any parameter changes automatically.
+
+Enable flag and start backend:
+```bash
+set FEATURE_RL_POLICY_SUGGESTIONS=true
+set RL_POLICY_STATE_PATH=results/rl_policy_state.json
+set RL_POLICY_LEARNING_RATE=0.12
+set RL_POLICY_DISCOUNT=0.90
+set RL_POLICY_EPSILON=0.05
+python server.py
+```
+
+New endpoints:
+- `GET /policy/suggest?explore=false` (generates manual-apply recommendation only)
+- `POST /policy/reward` (records reward feedback for prior suggestion)
+- `GET /policy/stats` (returns Q-table and pending-suggestion stats)
+
+Safety contract:
+- Suggestions do not mutate runtime thresholds or retrain criteria.
+- Manual apply remains out of scope until Phase 9 guarded apply.
+
 ## Dataset Preprocessing
 Preprocess all datasets using the command
 ```bash
