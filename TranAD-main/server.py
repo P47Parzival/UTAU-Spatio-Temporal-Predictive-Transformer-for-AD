@@ -4,7 +4,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from collections import deque
@@ -23,6 +23,10 @@ except ImportError:
 from src.models import STP_TranAD
 
 app = FastAPI(title="STP-TranAD Streaming Inference Engine")
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 # CORS for React Frontend
 app.add_middleware(
@@ -76,12 +80,16 @@ CALIBRATE_TOL = float(os.getenv("CALIBRATE_TOL", "1e-4"))
 CALIBRATE_MAX_SAMPLES = int(os.getenv("CALIBRATE_MAX_SAMPLES", "48"))
 
 # Kafka streaming controls
-KAFKA_CONSUMER_ENABLED = os.getenv("KAFKA_CONSUMER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+KAFKA_CONSUMER_ENABLED = _env_flag("KAFKA_CONSUMER_ENABLED")
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:29092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "telemetry-stream")
 KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "stp-tranad-consumer")
 KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
 KAFKA_RECONNECT_BACKOFF_SEC = float(os.getenv("KAFKA_RECONNECT_BACKOFF_SEC", "5.0"))
+
+# Phase 1 rollout flags
+FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB")
+FEATURE_RL_POLICY_SUGGESTIONS = _env_flag("FEATURE_RL_POLICY_SUGGESTIONS")
 
 # Ingestion runtime state
 last_ingest_timestamp_ms = None
@@ -113,11 +121,16 @@ score_histories = {
 }
 
 recent_alert_history = deque(maxlen=500)
+anomaly_event_history = deque(maxlen=2000)
+anomaly_event_seq = 0
 anomaly_streak = 0
 last_score_meta = {
     "recon_score": 0.0,
     "forecast_score": 0.0,
     "corr_score": 0.0,
+    "recon_z": 0.0,
+    "forecast_z": 0.0,
+    "corr_z": 0.0,
     "fused_score": 0.0,
     "threshold": FUSED_THRESHOLD_DEFAULT,
 }
@@ -362,6 +375,9 @@ def _reset_ingestion_state(dim: int):
         "recon_score": 0.0,
         "forecast_score": 0.0,
         "corr_score": 0.0,
+        "recon_z": 0.0,
+        "forecast_z": 0.0,
+        "corr_z": 0.0,
         "fused_score": 0.0,
         "threshold": FUSED_THRESHOLD_DEFAULT,
     }
@@ -525,10 +541,94 @@ def _compute_fused_score(recon_vec: np.ndarray, forecast_vec: np.ndarray, corr_s
         "recon_score": recon_score,
         "forecast_score": forecast_score,
         "corr_score": corr_score,
+        "recon_z": float(recon_z),
+        "forecast_z": float(forecast_z),
+        "corr_z": float(corr_z),
         "fused_score": float(fused_score),
         "threshold": threshold,
     }
     return float(fused_score), threshold
+
+def _build_anomaly_source_breakdown() -> dict:
+    recon_w = FUSED_WEIGHT_RECON * float(last_score_meta.get("recon_z", 0.0))
+    forecast_w = FUSED_WEIGHT_FORECAST * float(last_score_meta.get("forecast_z", 0.0))
+    corr_w = FUSED_WEIGHT_CORR * float(last_score_meta.get("corr_z", 0.0))
+    total = float(recon_w + forecast_w + corr_w)
+    if total <= 1e-12:
+        total = 1.0
+
+    return {
+        "weights": {
+            "recon": FUSED_WEIGHT_RECON,
+            "forecast": FUSED_WEIGHT_FORECAST,
+            "corr": FUSED_WEIGHT_CORR,
+        },
+        "z_scores": {
+            "recon": float(last_score_meta.get("recon_z", 0.0)),
+            "forecast": float(last_score_meta.get("forecast_z", 0.0)),
+            "corr": float(last_score_meta.get("corr_z", 0.0)),
+        },
+        "weighted_components": {
+            "recon": recon_w,
+            "forecast": forecast_w,
+            "corr": corr_w,
+        },
+        "contribution_pct": {
+            "recon": float((recon_w / total) * 100.0),
+            "forecast": float((forecast_w / total) * 100.0),
+            "corr": float((corr_w / total) * 100.0),
+        },
+    }
+
+def _correlation_change_snapshot(history_window: np.ndarray, top_k: int = 5) -> dict:
+    if history_window.ndim != 2 or history_window.shape[0] < 8:
+        return {
+            "ready": False,
+            "fro_norm": 0.0,
+            "top_pair_changes": [],
+        }
+
+    midpoint = history_window.shape[0] // 2
+    prev_block = history_window[:midpoint]
+    curr_block = history_window[midpoint:]
+    c_prev = _safe_corrcoef(prev_block)
+    c_curr = _safe_corrcoef(curr_block)
+    diff = c_curr - c_prev
+    abs_diff = np.abs(diff)
+    if abs_diff.ndim != 2 or abs_diff.shape[0] <= 1:
+        return {
+            "ready": False,
+            "fro_norm": float(np.linalg.norm(diff, ord='fro')),
+            "top_pair_changes": [],
+        }
+
+    tri_r, tri_c = np.triu_indices(abs_diff.shape[0], k=1)
+    if tri_r.size == 0:
+        return {
+            "ready": False,
+            "fro_norm": float(np.linalg.norm(diff, ord='fro')),
+            "top_pair_changes": [],
+        }
+
+    top_order = np.argsort(abs_diff[tri_r, tri_c])[::-1][:top_k]
+    top_changes = []
+    for idx in top_order:
+        r = int(tri_r[idx])
+        c = int(tri_c[idx])
+        top_changes.append({
+            "sensor_a": f"s{r}",
+            "sensor_b": f"s{c}",
+            "prev_corr": float(c_prev[r, c]),
+            "curr_corr": float(c_curr[r, c]),
+            "delta": float(diff[r, c]),
+            "abs_delta": float(abs_diff[r, c]),
+        })
+
+    return {
+        "ready": True,
+        "fro_norm": float(np.linalg.norm(diff, ord='fro')),
+        "top_pair_changes": top_changes,
+    }
 
 def _severity_and_confidence(fused_score: float, threshold: float):
     if threshold <= 1e-8:
@@ -616,6 +716,48 @@ def _investigation_hints(anomaly_type: str, contributors: list[dict], corr_score
     if len(contributors) > 1:
         hints.append(f"Compare {contributors[0]['sensor']} with {contributors[1]['sensor']} for coupled deviation.")
     return hints[:4]
+
+def _record_anomaly_event(
+    tick: int,
+    fused_score: float,
+    threshold: float,
+    severity_score: int,
+    severity_level: str,
+    confidence: float,
+    anomaly_type: str,
+    duration_steps: int,
+    top_contributors: list[dict],
+    historical_similar: list[dict],
+    investigation_hints: list[str],
+    anomaly_source: Optional[dict],
+):
+    global anomaly_event_seq
+    anomaly_event_seq += 1
+    event = {
+        "id": anomaly_event_seq,
+        "created_at_ms": _now_ms(),
+        "dataset": DATASET,
+        "tick": tick,
+        "system_loss": float(fused_score),
+        "threshold": float(threshold),
+        "severity_score": int(severity_score),
+        "severity_level": severity_level,
+        "confidence": float(confidence),
+        "anomaly_type": anomaly_type,
+        "duration_steps": int(duration_steps),
+        "top_sensor": top_contributors[0]["sensor"] if top_contributors else "n/a",
+        "top_contributors": top_contributors,
+        "historical_similar": historical_similar,
+        "investigation_hints": investigation_hints,
+        "score_components": {
+            "recon": float(last_score_meta.get("recon_score", 0.0)),
+            "forecast": float(last_score_meta.get("forecast_score", 0.0)),
+            "corr": float(last_score_meta.get("corr_score", 0.0)),
+        },
+        "anomaly_source": anomaly_source,
+    }
+    anomaly_event_history.append(event)
+    return event
 
 def _validate_timestamp(timestamp_ms: int):
     global last_ingest_timestamp_ms
@@ -909,8 +1051,49 @@ async def get_status():
             "model_registry": model_registry,
             "feedback": feedback_counters,
         },
+        "features": {
+            "anomaly_source_tab": FEATURE_ANOMALY_SOURCE_TAB,
+            "rl_policy_suggestions": FEATURE_RL_POLICY_SUGGESTIONS,
+        },
         "kafka": kafka_state,
     }
+
+@app.get("/anomalies")
+async def list_anomalies(
+    dataset: Optional[str] = None,
+    severity_min: int = Query(0, ge=0, le=100),
+    anomaly_type: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    events = list(anomaly_event_history)
+    events.reverse()
+
+    filtered = []
+    for event in events:
+        if dataset and event["dataset"] != dataset:
+            continue
+        if event["severity_score"] < severity_min:
+            continue
+        if anomaly_type and event["anomaly_type"] != anomaly_type:
+            continue
+        filtered.append(event)
+
+    total = len(filtered)
+    page = filtered[offset:offset + limit]
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": page,
+    }
+
+@app.get("/anomalies/{anomaly_id}")
+async def get_anomaly_detail(anomaly_id: int):
+    for event in anomaly_event_history:
+        if event["id"] == anomaly_id:
+            return event
+    raise HTTPException(status_code=404, detail="anomaly_not_found")
 
 @app.post("/change_dataset")
 async def trigger_dataset_swap(req: SwapRequest):
@@ -1194,6 +1377,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 sensors_actual[f"s{i}_actual"] = float(actual_sensors[i])
                 sensors_forecast[f"s{i}_forecast"] = float(pred_future[i])
 
+            anomaly_source_info = None
+            if FEATURE_ANOMALY_SOURCE_TAB and is_anomalous:
+                anomaly_source_info = {
+                    "breakdown": _build_anomaly_source_breakdown(),
+                    "correlation_change": _correlation_change_snapshot(
+                        np.asarray(history_window, dtype=np.float64),
+                        top_k=5,
+                    ),
+                }
+
             payload = {
                 "tick": current_tick,
                 "system_loss": fused_score,
@@ -1218,6 +1411,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     "investigation_hints": hints,
                 },
             }
+
+            if anomaly_source_info is not None:
+                payload["anomaly_source"] = anomaly_source_info
+
+            if is_anomalous:
+                _record_anomaly_event(
+                    tick=current_tick,
+                    fused_score=fused_score,
+                    threshold=fused_threshold,
+                    severity_score=severity_score,
+                    severity_level=severity_level,
+                    confidence=confidence,
+                    anomaly_type=anomaly_type,
+                    duration_steps=anomaly_streak,
+                    top_contributors=top_contributors,
+                    historical_similar=similar_history,
+                    investigation_hints=hints,
+                    anomaly_source=anomaly_source_info,
+                )
             
             await websocket.send_text(json.dumps(payload))
             current_tick += 1

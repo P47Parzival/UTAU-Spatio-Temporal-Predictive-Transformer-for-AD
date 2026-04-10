@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { AlertTriangle, CheckCircle, Activity, Server, Database, ShieldAlert, RefreshCw } from 'lucide-react';
+import AnomalySourceTab from './components/AnomalySourceTab';
 
 interface DataPoint {
   tick: number;
@@ -44,7 +45,41 @@ interface AlertExplanation {
   investigation_hints: string[];
 }
 
+interface AnomalySourcePayload {
+  breakdown: {
+    contribution_pct: {
+      recon: number;
+      forecast: number;
+      corr: number;
+    };
+    z_scores: {
+      recon: number;
+      forecast: number;
+      corr: number;
+    };
+  };
+  correlation_change: {
+    ready: boolean;
+    fro_norm: number;
+    top_pair_changes: Array<{
+      sensor_a: string;
+      sensor_b: string;
+      prev_corr: number;
+      curr_corr: number;
+      delta: number;
+      abs_delta: number;
+    }>;
+  };
+}
+
+const featureFlag = (value: unknown, defaultValue = false): boolean => {
+  if (typeof value !== 'string') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+};
+
 export default function App() {
+  const isAnomalySourceTabEnabled = featureFlag(import.meta.env.VITE_FEATURE_ANOMALY_SOURCE_TAB, true);
+  const isRlPolicySuggestionsEnabled = featureFlag(import.meta.env.VITE_FEATURE_RL_POLICY_SUGGESTIONS);
   const [data, setData] = useState<DataPoint[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [systemState, setSystemState] = useState<'HEALTHY' | 'WARNING' | 'CRITICAL'>('HEALTHY');
@@ -52,9 +87,11 @@ export default function App() {
   const [activeDataset, setActiveDataset] = useState('SMD');
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [alertExplanation, setAlertExplanation] = useState<AlertExplanation | null>(null);
+  const [anomalySource, setAnomalySource] = useState<AnomalySourcePayload | null>(null);
   const [scoreComponents, setScoreComponents] = useState<{ recon: number; forecast: number; corr: number } | null>(null);
   const [feedbackStatus, setFeedbackStatus] = useState('');
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [activeFeatureTab, setActiveFeatureTab] = useState<'live' | 'anomaly-source'>('live');
   const datasetTabs = [
     { label: 'SMD', value: 'SMD' },
     { label: 'MSL', value: 'MSL' },
@@ -90,6 +127,9 @@ export default function App() {
       if (payload.alert_explanation) {
         setAlertExplanation(payload.alert_explanation as AlertExplanation);
       }
+      if (payload.anomaly_source) {
+        setAnomalySource(payload.anomaly_source as AnomalySourcePayload);
+      }
       if (payload.score_components) {
         setScoreComponents(payload.score_components as { recon: number; forecast: number; corr: number });
       }
@@ -110,7 +150,7 @@ export default function App() {
     };
 
     return () => ws.close();
-  }, []);
+  }, [activeDataset]);
   const submitFeedback = async (wasAnomaly: boolean, calibrateRequested: boolean, note: string) => {
     const lastPoint = data.length ? data[data.length - 1] : null;
     const response = await fetch('http://127.0.0.1:8000/feedback', {
@@ -173,6 +213,9 @@ export default function App() {
     // Clear array to prevent UI dimension mismatch crashes
     setData([]);
     setDimensions(0);
+    setAlertExplanation(null);
+    setAnomalySource(null);
+    setScoreComponents(null);
     setActiveDataset(ds);
     
     try {
@@ -213,6 +256,16 @@ export default function App() {
             <Database className="w-5 h-5 text-slate-400" />
             <span className="text-sm font-medium">Model: GAT + Transformer</span>
           </div>
+          {(isAnomalySourceTabEnabled || isRlPolicySuggestionsEnabled) && (
+            <div className="flex items-center space-x-2 text-[10px] uppercase tracking-widest text-slate-300">
+              {isAnomalySourceTabEnabled && (
+                <span className="border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 rounded">Anomaly Source Beta</span>
+              )}
+              {isRlPolicySuggestionsEnabled && (
+                <span className="border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 rounded">RL Suggestion Beta</span>
+              )}
+            </div>
+          )}
           <div className={`px-4 py-1.5 rounded-full border ${isConnected ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-slate-700 bg-slate-800 text-slate-400'} flex items-center space-x-2`}>
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`} />
             <span className="text-sm font-bold">{isConnected && !isTransitioning ? 'LIVE STREAMING' : 'DISCONNECTED'}</span>
@@ -237,6 +290,42 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {isAnomalySourceTabEnabled && (
+        <div className="flex space-x-2 mb-8 bg-slate-900 border border-slate-800 p-1 rounded-lg w-max">
+          <button
+            onClick={() => setActiveFeatureTab('live')}
+            className={`px-5 py-2 rounded-md text-xs font-bold tracking-widest transition-all ${
+              activeFeatureTab === 'live'
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            Live Monitoring
+          </button>
+          <button
+            onClick={() => setActiveFeatureTab('anomaly-source')}
+            className={`px-5 py-2 rounded-md text-xs font-bold tracking-widest transition-all ${
+              activeFeatureTab === 'anomaly-source'
+              ? 'bg-emerald-600 text-white'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            Anomaly Source
+          </button>
+        </div>
+      )}
+
+      {activeFeatureTab === 'anomaly-source' ? (
+        <AnomalySourceTab
+          activeDataset={activeDataset}
+          alertExplanation={alertExplanation}
+          anomalySource={anomalySource}
+          scoreComponents={scoreComponents}
+          isConnected={isConnected}
+        />
+      ) : (
+      <>
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
@@ -436,6 +525,8 @@ export default function App() {
             </div>
           ))}
         </div>
+      )}
+      </>
       )}
     </div>
   );

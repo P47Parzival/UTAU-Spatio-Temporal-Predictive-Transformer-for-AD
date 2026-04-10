@@ -2,6 +2,23 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## Project Feature Flags (Phase 1)
+The dashboard reads rollout flags from Vite environment variables so new capabilities can be enabled gradually.
+
+- `VITE_FEATURE_ANOMALY_SOURCE_TAB` (default `true`)
+- `VITE_FEATURE_RL_POLICY_SUGGESTIONS` (default `false`)
+
+Windows PowerShell example:
+```powershell
+$env:VITE_FEATURE_ANOMALY_SOURCE_TAB = "true"
+$env:VITE_FEATURE_RL_POLICY_SUGGESTIONS = "true"
+npm run dev
+```
+
+Compatibility notes:
+- Existing dashboard behavior is unchanged when `VITE_FEATURE_ANOMALY_SOURCE_TAB=false`.
+- Current websocket contract remains the default rendering path.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)

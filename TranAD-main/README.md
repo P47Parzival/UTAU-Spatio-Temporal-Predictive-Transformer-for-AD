@@ -57,6 +57,37 @@ To stream this demo to Kafka:
 python kafka_producer.py --dataset demo --topic telemetry-stream --hz 1
 ```
 
+## Phase 1 Rollout Flags (Non-Breaking)
+Phase 1 introduces gated feature flags so we can ship incrementally without breaking existing clients.
+
+Backend flags:
+- `FEATURE_ANOMALY_SOURCE_TAB` (default `false`)
+- `FEATURE_RL_POLICY_SUGGESTIONS` (default `false`)
+
+Example:
+```bash
+set FEATURE_ANOMALY_SOURCE_TAB=true
+set FEATURE_RL_POLICY_SUGGESTIONS=true
+python server.py
+```
+
+Compatibility contract:
+- Existing websocket payload fields remain unchanged.
+- Existing endpoints (`/ingest`, `/feedback`, `/retrain/plan`, `/calibrate`) remain unchanged.
+- Feature state is observable in `GET /status` under the `features` object.
+
+When `FEATURE_ANOMALY_SOURCE_TAB=true`, websocket messages for anomalous ticks include an additional optional object:
+- `anomaly_source.breakdown` (weights, z-scores, weighted component values, contribution percentages)
+- `anomaly_source.correlation_change` (correlation-shift frobenius norm + top changed sensor pairs)
+
+## Phase 3 Anomaly Investigation APIs
+Additive APIs for historical anomaly exploration are now available:
+
+- `GET /anomalies?dataset=SMD&severity_min=50&anomaly_type=point_anomaly&limit=100&offset=0`
+- `GET /anomalies/{anomaly_id}`
+
+Response payloads include severity, confidence, anomaly type, contributor ranking, score components, and optional `anomaly_source` details when enabled.
+
 ## Dataset Preprocessing
 Preprocess all datasets using the command
 ```bash
