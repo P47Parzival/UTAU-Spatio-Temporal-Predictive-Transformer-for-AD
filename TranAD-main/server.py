@@ -72,7 +72,8 @@ FUSED_THRESHOLD_PERCENTILE = float(os.getenv("FUSED_THRESHOLD_PERCENTILE", "97.5
 FUSED_THRESHOLD_WARMUP = int(os.getenv("FUSED_THRESHOLD_WARMUP", "120"))
 
 # Phase 4 governance controls
-FEEDBACK_DB_PATH = os.getenv("FEEDBACK_DB_PATH", os.path.join("results", "operator_feedback.db"))
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+FEEDBACK_DB_PATH = os.getenv("FEEDBACK_DB_PATH", os.path.join(_SERVER_DIR, "results", "operator_feedback.db"))
 DRIFT_MONITOR_INTERVAL_SEC = int(os.getenv("DRIFT_MONITOR_INTERVAL_SEC", "10"))
 DRIFT_MIN_POINTS = int(os.getenv("DRIFT_MIN_POINTS", "120"))
 DRIFT_Z_THRESHOLD = float(os.getenv("DRIFT_Z_THRESHOLD", "2.5"))
@@ -1615,6 +1616,10 @@ async def get_anomaly_detail(anomaly_id: int):
         if event["id"] == anomaly_id:
             return event
     raise HTTPException(status_code=404, detail="anomaly_not_found")
+
+@app.get("/api/feedback_history")
+async def get_feedback_history_api(limit: int = 5):
+    return _load_recent_feedback(limit)
 
 @app.post("/change_dataset")
 async def trigger_dataset_swap(req: SwapRequest):

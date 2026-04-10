@@ -187,7 +187,13 @@ export default function App() {
   }
   
   if (currentPath === '/ai-chat') {
-    return <AIChatPage onBack={() => navigateTo('/dashboard')} />;
+    return <AIChatPage 
+      onBack={() => navigateTo('/dashboard')} 
+      systemState={systemState}
+      activeDataset={activeDataset}
+      alertExplanation={alertExplanation}
+      currentMetrics={data.length ? data[data.length - 1] : null}
+    />;
   }
 
   return (
