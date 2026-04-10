@@ -1,11 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AegisHeader }  from './components/Header';
 import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
 import { IncidentReport, RootCausePanel, SimilarIncidents, GovernancePanel } from './components/RightPanel';
 import AnomalySourceTab from './components/AnomalySourceTab';
-import NetworkScene     from './components/NetworkScene';
-import type { AlertExplanation } from './components/RightPanel';
+
+interface AlertExplanation {
+  severity_score: number;
+  severity_level: 'info' | 'warning' | 'critical';
+  confidence: number;
+  anomaly_type: string;
+  duration_steps: number;
+  top_contributors: { sensor: string; contribution_pct: number }[];
+  historical_similar: { tick: number; dataset: string; summary: string; similarity?: number }[];
+  investigation_hints: string[];
+}
 
 interface DataPoint {
   tick: number; system_loss: number; is_anomalous: boolean; threshold: number;
@@ -43,29 +52,65 @@ export default function App() {
   const [isSubmittingFeedback,  setIsSubmittingFeedback]  = useState(false);
   const [activeFeatureTab,      setActiveFeatureTab]      = useState<'live' | 'anomaly-source'>('live');
 
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/stream');
-    ws.onopen  = () => setIsConnected(true);
-    ws.onclose = () => setIsConnected(false);
-    ws.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.dimensions && payload.dimensions !== dimensions) setDimensions(payload.dimensions);
-      const newPoint: DataPoint = {
-        tick: payload.tick, system_loss: payload.system_loss,
-        is_anomalous: payload.is_anomalous, threshold: payload.threshold,
-        score_components: payload.score_components, alert_explanation: payload.alert_explanation,
-        ...payload.sensors, ...payload.forecast,
+    let stopped = false;
+    const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${wsScheme}://127.0.0.1:8000/ws/stream`;
+
+    const connect = () => {
+      if (stopped) return;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => setIsConnected(true);
+      ws.onclose = () => {
+        setIsConnected(false);
+        if (!stopped) {
+          reconnectTimerRef.current = window.setTimeout(connect, 1000);
+        }
       };
-      if (payload.alert_explanation) setAlertExplanation(payload.alert_explanation);
-      if (payload.anomaly_source)    setAnomalySource(payload.anomaly_source);
-      if (payload.score_components)  setScoreComponents(payload.score_components);
-      setData(prev => { const n = [...prev, newPoint]; if (n.length > 50) n.shift(); return n; });
-      if (payload.is_anomalous)                               setSystemState('CRITICAL');
-      else if (payload.system_loss > payload.threshold * 0.8) setSystemState('WARNING');
-      else                                                    setSystemState('HEALTHY');
+      ws.onerror = () => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      };
+      ws.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.dimensions) {
+          setDimensions(prev => (payload.dimensions !== prev ? payload.dimensions : prev));
+        }
+        const newPoint: DataPoint = {
+          tick: payload.tick, system_loss: payload.system_loss,
+          is_anomalous: payload.is_anomalous, threshold: payload.threshold,
+          score_components: payload.score_components, alert_explanation: payload.alert_explanation,
+          ...payload.sensors, ...payload.forecast,
+        };
+        if (payload.alert_explanation) setAlertExplanation(payload.alert_explanation);
+        if (payload.anomaly_source)    setAnomalySource(payload.anomaly_source);
+        if (payload.score_components)  setScoreComponents(payload.score_components);
+        setData(prev => { const n = [...prev, newPoint]; if (n.length > 50) n.shift(); return n; });
+        if (payload.is_anomalous)                               setSystemState('CRITICAL');
+        else if (payload.system_loss > payload.threshold * 0.8) setSystemState('WARNING');
+        else                                                    setSystemState('HEALTHY');
+      };
     };
-    return () => ws.close();
-  }, [activeDataset]);
+
+    connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   const submitFeedback = async (wasAnomaly: boolean, calibrateRequested: boolean, note: string) => {
     const last = data.length ? data[data.length - 1] : null;
@@ -114,7 +159,6 @@ export default function App() {
   };
 
   const hotSensors = new Set<string>(alertExplanation?.top_contributors.map(c => c.sensor) ?? []);
-  const latestData = data.length ? data[data.length - 1] : null;
 
   return (
     <div id="aegis-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: '#F4EDD8' }}>
