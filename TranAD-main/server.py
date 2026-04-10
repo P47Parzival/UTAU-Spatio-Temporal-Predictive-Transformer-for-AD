@@ -106,7 +106,7 @@ INFLUX_QUEUE_MAXSIZE = int(os.getenv("INFLUX_QUEUE_MAXSIZE", "5000"))
 INFLUX_DEADLETTER_PATH = os.getenv("INFLUX_DEADLETTER_PATH", os.path.join("results", "influx_deadletter.ndjson"))
 
 # Phase 1 rollout flags
-FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB")
+FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB", "true")
 FEATURE_RL_POLICY_SUGGESTIONS = _env_flag("FEATURE_RL_POLICY_SUGGESTIONS")
 
 # Phase 8 RL suggestion-only controls
@@ -1366,14 +1366,17 @@ def init_model(target_ds=None):
     opt = torch.optim.AdamW(m.parameters(), lr=1e-5, weight_decay=1e-5)
     
     if os.path.exists(ckpt_path):
-        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-        m.load_state_dict(checkpoint['model_state_dict'])
-        if 'optimizer_state_dict' in checkpoint:
-            try:
-                opt.load_state_dict(checkpoint['optimizer_state_dict'])
-            except Exception as exc:
-                print(f"WARNING: Optimizer state incompatible, continuing with fresh optimizer: {exc}")
-        print(f"Pre-trained checkpoint loaded successfully from {ckpt_path}.")
+        try:
+            checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+            m.load_state_dict(checkpoint['model_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                try:
+                    opt.load_state_dict(checkpoint['optimizer_state_dict'])
+                except Exception as exc:
+                    print(f"WARNING: Optimizer state incompatible, continuing with fresh optimizer: {exc}")
+            print(f"Pre-trained checkpoint loaded successfully from {ckpt_path}.")
+        except Exception as exc:
+            print(f"WARNING: Checkpoint incompatible with current feature dimension; using random initialization: {exc}")
     else:
         print("WARNING: Checkpoint not found. Running with uninitialized random weights.")
     m.eval()
@@ -2201,7 +2204,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 sensors_forecast[f"s{i}_forecast"] = float(pred_future[i])
 
             anomaly_source_info = None
-            if FEATURE_ANOMALY_SOURCE_TAB and is_anomalous:
+            if FEATURE_ANOMALY_SOURCE_TAB:
                 anomaly_source_info = {
                     "breakdown": _build_anomaly_source_breakdown(),
                     "correlation_change": _correlation_change_snapshot(

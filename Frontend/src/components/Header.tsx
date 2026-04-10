@@ -47,9 +47,15 @@ export function UtauHeader({
         <div style={{ width: 32, height: 32, border: '1.5px solid var(--gold)', transform: 'rotate(45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div className="logo-icon-inner" style={{ width: 12, height: 12, background: 'var(--gold)' }} />
         </div>
+<<<<<<< HEAD
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: '0.2em', color: '#F0EBE0', lineHeight: 1 }}>
             UTAU<span style={{ color: 'var(--gold)' }}>-IIoT</span>
+=======
+        <div>
+          <div style={{ fontFamily: "'Cinzel', serif", fontSize: 13, fontWeight: 700, color: '#D4A853', letterSpacing: '0.25em', lineHeight: 1, textShadow: '0 0 12px rgba(212,168,83,0.5)' }}>
+            UTAU
+>>>>>>> 78e26a1df5f69dddd930bddad4dc10eb0ff45681
           </div>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, fontWeight: 500, color: '#A09D94', letterSpacing: '0.35em', lineHeight: 1 }}>
             COMMAND CENTER
