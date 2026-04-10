@@ -2,8 +2,8 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { Activity } from 'lucide-react';
 
-const G  = '#B8862A'; const CU = '#A0581A'; const CR = '#A83240'; const VI = '#7c3aed';
-const TP = '#2C1E0A'; const TD = '#9A7E58'; const GR = '#2A7A6A';
+const G  = 'var(--gold)'; const CU = 'var(--copper)'; const CR = 'var(--crimson)'; const VI = 'var(--teal)';
+const TP = 'var(--text-primary)'; const TD = 'var(--text-dim)'; const GR = 'var(--teal)';
 type SysState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 function accent(s: SysState) { return s === 'CRITICAL' ? CR : s === 'WARNING' ? CU : G; }
 
@@ -74,7 +74,7 @@ export function ResidualSection({ data, dimensions, hotSensors }: { data: any[];
           return (
             <div key={i} className="panel-recessed" style={{
               height: 80, padding: '6px 8px',
-              border: `1px solid ${isHot ? `${CR}60` : 'rgba(184,134,42,0.15)'}`,
+              border: `1px solid ${isHot ? 'var(--crimson)' : 'var(--border)'}`,
               background: isHot ? 'rgba(168,50,64,0.05)' : 'rgba(232, 220, 195, 0.40)',
               boxShadow: isHot ? `inset 0 0 10px rgba(168,50,64,0.1), 0 0 8px rgba(168,50,64,0.1)` : 'none',
               display: 'flex', flexDirection: 'column',

@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
-import { AegisHeader }  from './components/Header';
+import { UtauHeader }  from './components/Header';
 import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
 import { IncidentReport, RootCausePanel, SimilarIncidents, GovernancePanel } from './components/RightPanel';
 import AnomalySourceTab from './components/AnomalySourceTab';
+import LandingPage from './LandingPage';
+import AIChatPage from './AIChatPage';
 
 interface AlertExplanation {
   severity_score: number;
-  severity_level: 'info' | 'warning' | 'critical';
+  severity_level: string;
   confidence: number;
   anomaly_type: string;
   duration_steps: number;
@@ -51,12 +53,26 @@ export default function App() {
   const [feedbackStatus,        setFeedbackStatus]        = useState('');
   const [isSubmittingFeedback,  setIsSubmittingFeedback]  = useState(false);
   const [activeFeatureTab,      setActiveFeatureTab]      = useState<'live' | 'anomaly-source'>('live');
+  const [currentPath,           setCurrentPath]           = useState(() => window.location.pathname === '/dashboard' ? '/dashboard' : '/landing');
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let stopped = false;
+    
+    // Set initial route explicitly
+    if (window.location.pathname === '/' || window.location.pathname === '') {
+      window.history.replaceState(null, '', '/landing');
+    }
+
+    const handlePopState = () => {
+      let nextPath = window.location.pathname;
+      if (nextPath !== '/landing' && nextPath !== '/ai-chat') nextPath = '/dashboard';
+      setCurrentPath(nextPath);
+    };
+    window.addEventListener('popstate', handlePopState);
+
     const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = `${wsScheme}://127.0.0.1:8000/ws/stream`;
 
@@ -109,6 +125,7 @@ export default function App() {
         wsRef.current.close();
         wsRef.current = null;
       }
+      window.removeEventListener('popstate', handlePopState);
     };
   }, []);
 
@@ -158,19 +175,34 @@ export default function App() {
     finally { setIsTransitioning(false); }
   };
 
+  const navigateTo = (path: string) => {
+    window.history.pushState(null, '', path);
+    setCurrentPath(path);
+  };
+
   const hotSensors = new Set<string>(alertExplanation?.top_contributors.map(c => c.sensor) ?? []);
 
+  if (currentPath === '/landing') {
+    return <LandingPage onLaunch={() => navigateTo('/dashboard')} />;
+  }
+  
+  if (currentPath === '/ai-chat') {
+    return <AIChatPage onBack={() => navigateTo('/dashboard')} />;
+  }
+
   return (
-    <div id="aegis-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: '#F4EDD8' }}>
+    <div id="utau-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
 
       {/* Header */}
       <div style={{ height: 56, flexShrink: 0 }} className="hud-header">
-        <AegisHeader
+        <UtauHeader
           state={systemState} isConnected={isConnected && !isTransitioning}
           tabs={DATASET_TABS} activeDataset={activeDataset} isTransitioning={isTransitioning}
           onChangeDataset={changeDataset} isAnomalySourceTabEnabled={isAnomalySourceTabEnabled}
           isRlPolicySuggestionsEnabled={isRlPolicySuggestionsEnabled}
           activeFeatureTab={activeFeatureTab} onFeatureTabChange={setActiveFeatureTab}
+          onNavigateHome={() => navigateTo('/landing')}
+          onNavigateToChat={() => navigateTo('/ai-chat')}
         />
       </div>
 

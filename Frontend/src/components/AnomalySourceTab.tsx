@@ -35,8 +35,8 @@ type Props = {
 const API_BASE = 'http://127.0.0.1:8000';
 
 const C = {
-  cyan: '#B8862A', amber: '#A0581A', red: '#A83240', violet: '#7c3aed',
-  textPrimary: '#2C1E0A', textSec: '#6B4F2A', textDim: '#9A7E58', border: 'rgba(184,134,42,0.25)',
+  cyan: 'var(--gold)', amber: 'var(--copper)', red: 'var(--crimson)', violet: 'var(--teal)',
+  textPrimary: 'var(--text-primary)', textSec: 'var(--text-secondary)', textDim: 'var(--text-dim)', border: 'var(--border)',
 };
 
 const severityColor = (level: string) => {
@@ -94,31 +94,31 @@ export default function AnomalySourceTab({
   }, [selectedItem, anomalySource]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       
       {/* Top 3 Metric Cards */}
-      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 1 }}>
         
         {/* Live Source Snapshot */}
-        <div className="panel" style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <div style={{ padding: 32, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24 }}>
             <Activity size={12} color={C.cyan} />
-            <span className="section-label" style={{ color: C.cyan }}>LIVE SNAPSHOT</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.2em', color: C.cyan }}>LIVE SNAPSHOT</span>
           </div>
           {!alertExplanation ? (
-            <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim }}>// awaiting anomalous event...</p>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim }}>// awaiting anomalous event...</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{
-                display: 'inline-block', alignSelf: 'flex-start', padding: '2px 8px', borderRadius: 4, fontFamily: 'JetBrains Mono', fontSize: 10, fontWeight: 700,
+                display: 'inline-block', alignSelf: 'flex-start', padding: '4px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
                 color: severityColor(alertExplanation.severity_level), border: `1px solid ${severityColor(alertExplanation.severity_level)}40`, background: `${severityColor(alertExplanation.severity_level)}15`
               }}>
                 {alertExplanation.severity_level.toUpperCase()} | SCORE: {alertExplanation.severity_score}
               </div>
-              <div style={{ fontFamily: 'Inter', fontSize: 12, color: C.textSec }}>Type: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{alertExplanation.anomaly_type.replace('_', ' ')}</span></div>
-              <div style={{ fontFamily: 'Inter', fontSize: 12, color: C.textSec }}>Confidence: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{(alertExplanation.confidence * 100).toFixed(1)}%</span></div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: C.textSec }}>Type: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{alertExplanation.anomaly_type.replace('_', ' ')}</span></div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: C.textSec }}>Confidence: <span style={{ color: C.textPrimary, fontWeight: 600 }}>{(alertExplanation.confidence * 100).toFixed(1)}%</span></div>
               {scoreComponents && (
-                <div style={{ marginTop: 8, padding: 8, background: 'rgba(232,220,195,0.6)', border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: 'JetBrains Mono', fontSize: 10, color: C.textSec, lineHeight: 1.5 }}>
+                <div style={{ marginTop: 8, padding: 12, background: 'var(--bg)', border: `1px solid ${C.border}`, fontFamily: 'var(--font-mono)', fontSize: 10, color: C.textSec, lineHeight: 1.8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Recon</span><span style={{color: C.cyan}}>{scoreComponents.recon.toFixed(6)}</span></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Forecast</span><span style={{color: C.violet}}>{scoreComponents.forecast.toFixed(6)}</span></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Corr</span><span style={{color: C.amber}}>{scoreComponents.corr.toFixed(6)}</span></div>
@@ -129,28 +129,28 @@ export default function AnomalySourceTab({
         </div>
 
         {/* Source Breakdown */}
-        <div className="panel" style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <div style={{ padding: 32, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24 }}>
             <Layers size={12} color={C.violet} />
-            <span className="section-label" style={{ color: C.violet }}>SOURCE BREAKDOWN</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.2em', color: C.violet }}>SOURCE BREAKDOWN</span>
           </div>
           {!sourceView ? (
-             <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim }}>// waiting for source frames...</p>
+             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim }}>// waiting for source frames...</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {([
                 { k: 'RECON', v: sourceView.breakdown.contribution_pct.recon, color: C.cyan },
                 { k: 'FORECAST', v: sourceView.breakdown.contribution_pct.forecast, color: C.violet },
                 { k: 'CORR', v: sourceView.breakdown.contribution_pct.corr, color: C.amber }
               ]).map(c => (
                 <div key={c.k}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono', fontSize: 10, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 10, marginBottom: 8, letterSpacing: '0.1em' }}>
                     <span style={{ color: C.textSec }}>{c.k} Pct:</span><span style={{ color: c.color, fontWeight: 700 }}>{c.v.toFixed(1)}%</span>
                   </div>
-                  <div style={{ height: 3, background: 'rgba(232,220,195,0.8)', borderRadius: 99 }}><div style={{ width: `${c.v}%`, height: '100%', background: c.color, borderRadius: 99 }}/></div>
+                  <div style={{ height: 2, background: 'var(--border)', borderRadius: 0 }}><div style={{ width: `${c.v}%`, height: '100%', background: c.color, boxShadow: `0 0 10px ${c.color}60` }}/></div>
                 </div>
               ))}
-              <div style={{ marginTop: 8, padding: 8, background: 'rgba(232,220,195,0.5)', border: `1px solid ${C.border}`, borderRadius: 6, fontFamily: 'JetBrains Mono', fontSize: 10, color: C.textDim }}>
+              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg)', border: `1px solid ${C.border}`, fontFamily: 'var(--font-mono)', fontSize: 9, color: C.textSec, letterSpacing: '0.15em' }}>
                 Z-SCORES: R {sourceView.breakdown.z_scores.recon.toFixed(3)} | F {sourceView.breakdown.z_scores.forecast.toFixed(3)} | C {sourceView.breakdown.z_scores.corr.toFixed(3)}
               </div>
             </div>
@@ -158,19 +158,19 @@ export default function AnomalySourceTab({
         </div>
 
         {/* Correlation Shift */}
-        <div className="panel" style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <div style={{ padding: 32, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24 }}>
              <ActivitySquare size={12} color={C.amber} />
-             <span className="section-label" style={{ color: C.amber }}>CORRELATION SHIFT</span>
+             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.2em', color: C.amber }}>CORRELATION SHIFT</span>
           </div>
           {!sourceView?.correlation_change.ready ? (
-             <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim }}>// no stable snapshot yet</p>
+             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim }}>// no stable snapshot yet</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
-              <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.textSec }}>Frobenius Norm: <span style={{ color: C.amber }}>{sourceView.correlation_change.fro_norm.toFixed(6)}</span></div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: C.textSec }}>Frobenius Norm: <span style={{ color: C.amber }}>{sourceView.correlation_change.fro_norm.toFixed(6)}</span></div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, overflowY: 'auto' }}>
                 {sourceView.correlation_change.top_pair_changes.slice(0, 5).map((pair) => (
-                  <div key={`${pair.sensor_a}-${pair.sensor_b}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 8px', background: 'rgba(232,220,195,0.5)', border: `1px solid ${C.border}`, borderRadius: 4, fontFamily: 'JetBrains Mono', fontSize: 9 }}>
+                  <div key={`${pair.sensor_a}-${pair.sensor_b}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: 'var(--bg)', border: `1px solid ${C.border}`, fontFamily: 'var(--font-mono)', fontSize: 9 }}>
                     <span style={{ color: C.textSec }}>{pair.sensor_a} ↔ {pair.sensor_b}</span>
                     <span style={{ color: C.red }}>Δ {pair.delta.toFixed(4)}</span>
                   </div>
@@ -182,62 +182,67 @@ export default function AnomalySourceTab({
       </section>
 
       {/* Historical List + Detail */}
-      <section className="panel" style={{ padding: 16, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 400 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Database size={12} color={C.textPrimary} />
-            <span className="section-label" style={{ color: C.textPrimary }}>HISTORICAL ANOMALY SOURCE EVENTS ({activeDataset})</span>
+      <section style={{ padding: 32, background: 'var(--bg-card)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 400 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Database size={16} color={C.textPrimary} />
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 24, letterSpacing: '0.05em', color: C.textPrimary }}>HISTORICAL ANOMALY SOURCE EVENTS</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textSec, borderLeft: '1px solid var(--border)', paddingLeft: 12 }}>{activeDataset}</span>
           </div>
-          <button onClick={() => void loadAnomalies()} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.textPrimary, fontFamily: 'JetBrains Mono', fontSize: 10, cursor: 'pointer' }}>
+          <button onClick={() => void loadAnomalies()} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', background: 'transparent', border: `1px solid ${C.border}`, color: C.textPrimary, fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer', transition: 'all 0.2s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--text-primary)'; e.currentTarget.style.color = 'var(--bg)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textPrimary; }}
+          >
             <RefreshCw size={11} className={isLoading ? 'animate-spin' : ''} /> REFRESH
           </button>
         </div>
 
-        {!isConnected && <p style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.amber, marginBottom: 8 }}># Backend disconnected. History may be stale.</p>}
-        {error && <p style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.red, marginBottom: 8 }}>{error}</p>}
+        {!isConnected && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: C.amber, marginBottom: 8 }}># Backend disconnected. History may be stale.</p>}
+        {error && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: C.red, marginBottom: 8 }}>{error}</p>}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(250px, 1fr) minmax(250px, 1fr)', gap: 16, flex: 1, minHeight: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: 0, flex: 1, minHeight: 0, border: '1px solid var(--border)' }}>
           
           {/* List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', paddingRight: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', borderRight: '1px solid var(--border)', background: 'var(--bg)' }}>
             {items.length === 0 && !isLoading ? (
-               <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim, padding: 16 }}>// no anomalies recorded for {activeDataset}</p>
+               <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim, padding: 24 }}>// no anomalies recorded for {activeDataset}</p>
             ) : items.map((item) => {
               const isActive = selectedId === item.id;
               const sColor = severityColor(item.severity_level);
               return (
                 <button key={item.id} onClick={() => setSelectedId(item.id)} style={{
-                  display: 'flex', flexDirection: 'column', padding: '10px 12px', background: isActive ? 'rgba(184,134,42,0.15)' : 'rgba(232,220,195,0.4)',
-                  border: `1px solid ${isActive ? C.cyan : C.border}`, borderRadius: 6, cursor: 'pointer', textAlign: 'left', transition: 'all 0.2s',
+                  display: 'flex', flexDirection: 'column', padding: '16px 20px', background: isActive ? 'var(--gold-dim)' : 'transparent',
+                  borderBottom: `1px solid var(--border)`, cursor: 'pointer', textAlign: 'left', transition: 'all 0.2s',
+                  borderLeft: isActive ? `2px solid ${C.cyan}` : '2px solid transparent'
                 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono', fontSize: 10, marginBottom: 4, width: '100%' }}>
-                    <span style={{ color: isActive ? C.textPrimary : C.textSec }}>#{item.id} @ tick {item.tick}</span>
-                    <span style={{ color: sColor, padding: '2px 6px', background: `${sColor}15`, borderRadius: 4, fontWeight: 700 }}>{item.severity_level}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 11, marginBottom: 8, width: '100%' }}>
+                    <span style={{ color: isActive ? C.textPrimary : C.textSec }}>#{item.id} @ {item.tick}</span>
+                    <span style={{ color: sColor, padding: '2px 8px', border: `1px solid ${sColor}40`, background: `${sColor}15`, fontWeight: 600 }}>{item.severity_level.toUpperCase()}</span>
                   </div>
-                  <div style={{ fontFamily: 'Inter', fontSize: 11, color: C.textDim }}>{item.anomaly_type} | score: {item.system_loss.toFixed(4)}</div>
+                  <div style={{ fontFamily: 'var(--font-serif)', fontSize: 14, color: C.textDim }}>{item.anomaly_type.replace('_', ' ')} <span style={{ color: C.textSec, fontSize: 12, marginLeft: 8 }}>| sys_loss: {item.system_loss.toFixed(4)}</span></div>
                 </button>
               );
             })}
           </div>
 
           {/* Details */}
-          <div className="panel-recessed" style={{ padding: 16, display: 'flex', flexDirection: 'column' }}>
-            {isDetailLoading && <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim }}>// loading detail...</p>}
-            {!isDetailLoading && !selectedItem && <p style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: C.textDim }}>// select anomaly to inspect detail</p>}
+          <div style={{ padding: 32, display: 'flex', flexDirection: 'column', background: 'var(--bg-recessed)' }}>
+            {isDetailLoading && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim }}>// loading detail...</p>}
+            {!isDetailLoading && !selectedItem && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: C.textDim }}>// select anomaly to inspect detail</p>}
             {!isDetailLoading && selectedItem && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                 <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono', fontSize: 11, borderBottom: `1px solid ${C.border}`, paddingBottom: 8 }}>
-                    <span style={{ color: C.textSec }}>Anomaly</span><span style={{ color: C.textPrimary, fontWeight: 700 }}>#{selectedItem.id}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 11, borderBottom: `1px solid ${C.border}`, paddingBottom: 12 }}>
+                    <span style={{ color: C.textSec }}>Anomaly ID</span><span style={{ color: C.textPrimary, fontWeight: 700 }}>#{selectedItem.id}</span>
                  </div>
-                 <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono', fontSize: 11, borderBottom: `1px solid ${C.border}`, paddingBottom: 8 }}>
-                    <span style={{ color: C.textSec }}>Confidence</span><span style={{ color: C.textPrimary, fontWeight: 700 }}>{(selectedItem.confidence * 100).toFixed(1)}%</span>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 11, borderBottom: `1px solid ${C.border}`, paddingBottom: 12 }}>
+                    <span style={{ color: C.textSec }}>Confidence Score</span><span style={{ color: C.textPrimary, fontWeight: 700 }}>{(selectedItem.confidence * 100).toFixed(1)}%</span>
                  </div>
                  <div>
-                    <div style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.textSec, marginBottom: 8, letterSpacing: '0.1em' }}>HINTS:</div>
-                    <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 0, margin: 0, listStyle: 'none' }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: C.textSec, marginBottom: 12, letterSpacing: '0.1em' }}>INVESTIGATION HINTS:</div>
+                    <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 0, margin: 0, listStyle: 'none' }}>
                       {selectedItem.investigation_hints.map((hint, i) => (
-                        <li key={i} style={{ fontFamily: 'Inter', fontSize: 11, color: C.textPrimary, padding: '6px 10px', background: 'rgba(184,134,42,0.06)', border: `1px solid ${C.border}`, borderRadius: 4 }}>
-                          <span style={{ color: C.cyan, marginRight: 6 }}>›</span>{hint}
+                        <li key={i} style={{ fontFamily: 'var(--font-serif)', fontSize: 16, color: C.textPrimary, padding: '12px 16px', background: 'var(--bg)', border: `1px solid ${C.border}` }}>
+                          <span style={{ color: C.cyan, marginRight: 12, fontFamily: 'var(--font-mono)' }}>›</span>{hint}
                         </li>
                       ))}
                     </ul>

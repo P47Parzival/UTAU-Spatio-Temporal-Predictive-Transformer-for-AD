@@ -1,8 +1,8 @@
 // RightPanel — Cream Gold HUD Widgets
 import { Target, HardDrive, Clock, Shield, Check, AlertTriangle } from 'lucide-react';
 
-const G  = '#B8862A'; const CU = '#A0581A'; const CR = '#A83240'; const VI = '#7c3aed';
-const TP = '#2C1E0A'; const TS = '#6B4F2A'; const TD = '#9A7E58';
+const G  = 'var(--gold)'; const CU = 'var(--copper)'; const CR = 'var(--crimson)'; const VI = 'var(--teal)';
+const TP = 'var(--text-primary)'; const TS = 'var(--text-secondary)'; const TD = 'var(--text-dim)';
 type SysState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 function accent(s: SysState) { return s === 'CRITICAL' ? CR : s === 'WARNING' ? CU : G; }
 
@@ -20,7 +20,7 @@ export function IncidentReport({ alertExplanation }: { alertExplanation: AlertEx
 
   return (
     <div className="panel" style={{ flexShrink: 0 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid rgba(212,168,83,0.12)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Target size={11} color={color} />
           <span className="section-label" style={{ color }}>INCIDENT REPORT</span>
@@ -52,7 +52,7 @@ export function RootCausePanel({ alertExplanation }: { alertExplanation: AlertEx
   const color = alertExplanation ? CR : TD;
   return (
     <div className="panel" style={{ flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid rgba(212,168,83,0.12)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
         <HardDrive size={11} color={color} />
         <span className="section-label" style={{ color }}>ROOT CAUSE DRIVERS</span>
       </div>
@@ -66,7 +66,7 @@ export function RootCausePanel({ alertExplanation }: { alertExplanation: AlertEx
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: i === 0 ? CR : TS }}>{c.sensor}</span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: i === 0 ? CR : TD, fontWeight: 700 }}>{c.contribution_pct.toFixed(1)}%</span>
               </div>
-              <div style={{ height: 3, background: 'rgba(8,5,2,0.6)', borderRadius: 99 }}>
+              <div style={{ height: 3, background: 'var(--border-dim)', borderRadius: 99 }}>
                 <div style={{ height: '100%', width: `${c.contribution_pct}%`, background: i === 0 ? `linear-gradient(90deg, ${CR}80, ${CR})` : `linear-gradient(90deg, ${G}60, ${G})`, borderRadius: 99 }} />
               </div>
             </div>
@@ -81,7 +81,7 @@ export function SimilarIncidents({ alertExplanation }: { alertExplanation: Alert
   const sims = alertExplanation?.historical_similar ?? [];
   return (
     <div className="panel" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid rgba(212,168,83,0.12)', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <Clock size={11} color={TD} />
         <span className="section-label">SIMILAR INCIDENTS</span>
       </div>
@@ -106,7 +106,7 @@ export function GovernancePanel({ systemState, isSubmitting, feedbackStatus, onA
   const isHealthy = systemState === 'HEALTHY';
   return (
     <div className="panel" style={{ flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid rgba(212,168,83,0.12)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
         <Shield size={11} color={isHealthy ? G : CU} />
         <span className="section-label" style={{ color: isHealthy ? G : CU }}>GOVERNANCE LOOP</span>
       </div>
@@ -122,7 +122,7 @@ export function GovernancePanel({ systemState, isSubmitting, feedbackStatus, onA
           </div>
         </button>
         {feedbackStatus && (
-          <div style={{ padding: '6px 8px', borderRadius: 4, background: 'rgba(8,5,2,0.5)', border: '1px dashed rgba(212,168,83,0.2)', fontFamily: "'Cormorant Garamond', serif", fontSize: 11, color: TS, fontStyle: 'italic' }}>
+          <div style={{ padding: '6px 8px', borderRadius: 4, background: 'var(--bg-deep)', border: '1px dashed var(--border)', fontFamily: "'Cormorant Garamond', serif", fontSize: 11, color: TS, fontStyle: 'italic' }}>
             {feedbackStatus}
           </div>
         )}

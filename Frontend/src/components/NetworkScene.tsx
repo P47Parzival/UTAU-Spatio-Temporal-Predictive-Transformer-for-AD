@@ -7,10 +7,10 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Html, OrbitControls, Environment, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 
-const GOLD    = '#B8862A';
-const COPPER  = '#A0581A';
-const CRIMSON = '#A83240';
-const CREAM   = '#2C1E0A';
+const GOLD    = '#C9922A';
+const COPPER  = '#B87333';
+const CRIMSON = '#C0392B';
+const CREAM   = '#080807'; // Represents deep black core
 
 type SysState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 function stateColor(s: SysState) {
@@ -124,7 +124,7 @@ function ModelNode({ path, position, rotationY, color, isHot, label, liveVal }: 
       <Html position={[0, 1.8, 0]} center style={{ pointerEvents: 'none' }}>
         <div style={{
           background: 'rgba(255,250,238,0.85)', backdropFilter: 'blur(8px)',
-          border: `1px solid ${isHot ? CRIMSON : 'rgba(184,134,42,0.5)'}`,
+          border: `1px solid ${isHot ? CRIMSON : 'rgba(201,146,42,0.3)'}`,
           padding: '4px 12px', borderRadius: 6, whiteSpace: 'nowrap', textAlign: 'center',
           boxShadow: '0 4px 12px rgba(140,100,30,0.15)',
         }}>
@@ -189,7 +189,6 @@ function Scene({ systemState, hotSensors, latestData }: any) {
       {/* Realistic lighting environment */}
       <ambientLight intensity={0.5} color="#FFF5E0" />
       <directionalLight position={[10, 15, 10]} intensity={1.5} color="#FFE0A0" castShadow shadow-mapSize={[1024, 1024]} />
-      <Environment preset="warehouse" environmentIntensity={0.65} />
 
       <OrbitControls enableZoom autoRotate={false} enablePan={false} maxPolarAngle={Math.PI / 2.2} />
 

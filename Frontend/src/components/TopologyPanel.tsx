@@ -5,8 +5,8 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Environment, ContactShadows, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
-const G = '#B8862A'; const CU = '#A0581A'; const VI = '#7c3aed'; const CR = '#A83240';
-const TP = '#2C1E0A'; const TS = '#6B4F2A'; const TD = '#9A7E58';
+const G = 'var(--gold)'; const CU = 'var(--copper)'; const VI = 'var(--teal)'; const CR = 'var(--crimson)';
+const TP = 'var(--text-primary)'; const TS = 'var(--text-secondary)'; const TD = 'var(--text-dim)';
 
 type SysState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 function accent(s: SysState) { return s === 'CRITICAL' ? CR : s === 'WARNING' ? CU : G; }
@@ -70,7 +70,6 @@ function AssetViewer({ dataset, systemState }: { dataset: string; systemState: S
       <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true }}>
         <ambientLight intensity={0.6} color="#FFF5E0" />
         <directionalLight position={[4, 6, 4]} intensity={1.8} color="#FFE0A0" castShadow shadow-mapSize={[1024, 1024]} />
-        <Environment preset="warehouse" environmentIntensity={0.85} />
         <OrbitControls enableZoom={false} enablePan={false} maxPolarAngle={Math.PI / 1.8} autoRotate={false} />
         <Suspense fallback={null}>
           <SingleAsset dataset={dataset} systemState={systemState} />
@@ -97,7 +96,7 @@ export default function TopologyPanel({ activeDataset, scoreComponents, alertExp
       <AssetViewer dataset={activeDataset} systemState={systemState} />
 
       {/* Panel header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 10, borderBottom: '1px solid rgba(184,134,42,0.14)', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 10, borderBottom: '1px solid var(--border)', marginBottom: 14 }}>
         <Shield size={12} color={color} style={{ filter: `drop-shadow(0 0 5px ${color})` }} />
         <span className="section-label" style={{ color }}>FUSION DECOMPOSITION</span>
       </div>
@@ -128,7 +127,7 @@ export default function TopologyPanel({ activeDataset, scoreComponents, alertExp
       )}
 
       {/* Divider */}
-      {alertExplanation && <div style={{ height: 1, background: 'rgba(184,134,42,0.1)', marginBottom: 12 }} />}
+      {alertExplanation && <div style={{ height: 1, background: 'var(--border)', marginBottom: 12 }} />}
 
       {/* Investigation hints */}
       {alertExplanation?.investigation_hints?.length > 0 && (
@@ -139,7 +138,7 @@ export default function TopologyPanel({ activeDataset, scoreComponents, alertExp
           {alertExplanation.investigation_hints.map((hint: string, i: number) => (
             <div key={i} style={{
               padding: '8px 12px', borderRadius: 6, borderLeft: `3px solid ${G}`,
-              background: 'rgba(184,134,42,0.06)', animation: `fade-up 0.3s ease ${i * 0.07}s both`,
+              background: 'var(--border-dim)', animation: `fade-up 0.3s ease ${i * 0.07}s both`,
             }}>
               <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 13, color: TS, lineHeight: 1.5, fontWeight: 500 }}>
                 <span style={{ color: G, marginRight: 6 }}>›</span>{hint}
