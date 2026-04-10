@@ -14,7 +14,7 @@ import time
 import math
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 try:
     from aiokafka import AIOKafkaConsumer
 except ImportError:
@@ -27,6 +27,7 @@ except ImportError:
     WritePrecision = None
 
 from src.models import STP_TranAD
+from src.rl_policy_manager import RLPolicyManager
 
 app = FastAPI(title="STP-TranAD Streaming Inference Engine")
 
@@ -108,6 +109,19 @@ INFLUX_DEADLETTER_PATH = os.getenv("INFLUX_DEADLETTER_PATH", os.path.join("resul
 FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB")
 FEATURE_RL_POLICY_SUGGESTIONS = _env_flag("FEATURE_RL_POLICY_SUGGESTIONS")
 
+# Phase 8 RL suggestion-only controls
+RL_POLICY_STATE_PATH = os.getenv("RL_POLICY_STATE_PATH", os.path.join("results", "rl_policy_state.json"))
+RL_POLICY_LEARNING_RATE = float(os.getenv("RL_POLICY_LEARNING_RATE", "0.12"))
+RL_POLICY_DISCOUNT = float(os.getenv("RL_POLICY_DISCOUNT", "0.90"))
+RL_POLICY_EPSILON = float(os.getenv("RL_POLICY_EPSILON", "0.05"))
+
+# Phase 9 guarded apply controls
+POLICY_APPLY_MAX_THRESHOLD_DELTA = float(os.getenv("POLICY_APPLY_MAX_THRESHOLD_DELTA", "0.20"))
+POLICY_APPLY_MAX_RETRAIN_FEEDBACK_DELTA = int(os.getenv("POLICY_APPLY_MAX_RETRAIN_FEEDBACK_DELTA", "20"))
+POLICY_APPLY_MAX_DRIFT_Z_DELTA = float(os.getenv("POLICY_APPLY_MAX_DRIFT_Z_DELTA", "0.50"))
+POLICY_CANARY_MIN_POINTS = int(os.getenv("POLICY_CANARY_MIN_POINTS", "60"))
+POLICY_CANARY_MAX_ALERT_RATE_DELTA = float(os.getenv("POLICY_CANARY_MAX_ALERT_RATE_DELTA", "0.20"))
+
 # Ingestion runtime state
 last_ingest_timestamp_ms = None
 last_valid_vector = []
@@ -141,6 +155,22 @@ recent_alert_history = deque(maxlen=500)
 anomaly_event_history = deque(maxlen=2000)
 anomaly_event_seq = 0
 anomaly_streak = 0
+runtime_policy = {
+    "fused_threshold_default": float(FUSED_THRESHOLD_DEFAULT),
+    "retrain_min_feedback": int(RETRAIN_MIN_FEEDBACK),
+    "drift_z_threshold": float(DRIFT_Z_THRESHOLD),
+}
+policy_apply_history = deque(maxlen=200)
+policy_apply_seq = 0
+policy_apply_state = {
+    "enabled": FEATURE_RL_POLICY_SUGGESTIONS,
+    "last_apply_id": "",
+    "last_apply_status": "idle",
+    "last_apply_reason": "",
+    "last_apply_ts": 0,
+    "last_rollback_ts": 0,
+    "active_policy": dict(runtime_policy),
+}
 last_score_meta = {
     "recon_score": 0.0,
     "forecast_score": 0.0,
@@ -149,7 +179,7 @@ last_score_meta = {
     "forecast_z": 0.0,
     "corr_z": 0.0,
     "fused_score": 0.0,
-    "threshold": FUSED_THRESHOLD_DEFAULT,
+    "threshold": float(runtime_policy["fused_threshold_default"]),
 }
 
 feedback_db_lock = asyncio.Lock()
@@ -157,6 +187,8 @@ governance_task = None
 kafka_consumer_task = None
 influx_writer_task = None
 influx_queue = None
+rl_policy_manager = None
+rl_policy_last_suggestion = None
 feedback_counters = {
     "total": 0,
     "confirmed": 0,
@@ -234,6 +266,21 @@ class FeedbackPayload(BaseModel):
 
 class RetrainAppliedPayload(BaseModel):
     model_version: Optional[str] = None
+    note: Optional[str] = None
+
+class RLRewardPayload(BaseModel):
+    suggestion_id: str
+    reward: float
+    note: Optional[str] = None
+
+class RLApplyPayload(BaseModel):
+    suggestion_id: str
+    mode: str = "canary"
+    canary_points: int = 120
+    note: Optional[str] = None
+
+class RLRollbackPayload(BaseModel):
+    apply_id: Optional[str] = None
     note: Optional[str] = None
 
 def _now_ms() -> int:
@@ -322,6 +369,191 @@ def _emit_policy_event(event_type: str, action: str, reason: str = "", metadata:
         },
         fields,
     )
+
+def _build_rl_metrics_snapshot() -> dict:
+    recent = list(recent_alert_history)[-100:]
+    anomalous = 0
+    for item in recent:
+        if item.get("is_anomalous", False):
+            anomalous += 1
+    anomaly_rate = float(anomalous / max(1, len(recent)))
+
+    return {
+        "drift_z": float(drift_state.get("z_shift", 0.0)),
+        "drift_triggered": bool(drift_state.get("triggered", False)),
+        "feedback_total": int(feedback_counters.get("total", 0)),
+        "feedback_confirmed": int(feedback_counters.get("confirmed", 0)),
+        "feedback_dismissed": int(feedback_counters.get("dismissed", 0)),
+        "anomaly_rate_recent": anomaly_rate,
+        "fused_score": float(last_score_meta.get("fused_score", 0.0)),
+        "threshold": float(last_score_meta.get("threshold", runtime_policy["fused_threshold_default"])),
+    }
+
+def _current_policy_snapshot() -> dict[str, float]:
+    return {
+        "fused_threshold_default": float(runtime_policy["fused_threshold_default"]),
+        "retrain_min_feedback": int(runtime_policy["retrain_min_feedback"]),
+        "drift_z_threshold": float(runtime_policy["drift_z_threshold"]),
+    }
+
+def _normalize_policy_values(policy: dict[str, Any]) -> dict[str, float]:
+    return {
+        "fused_threshold_default": float(min(3.0, max(0.5, float(policy.get("fused_threshold_default", runtime_policy["fused_threshold_default"]))))),
+        "retrain_min_feedback": int(min(200, max(10, int(policy.get("retrain_min_feedback", runtime_policy["retrain_min_feedback"]))))),
+        "drift_z_threshold": float(min(5.0, max(1.0, float(policy.get("drift_z_threshold", runtime_policy["drift_z_threshold"]))))),
+    }
+
+def _policy_deltas(current_policy: dict[str, float], candidate_policy: dict[str, float]) -> dict[str, float]:
+    return {
+        "fused_threshold_default": float(candidate_policy["fused_threshold_default"] - current_policy["fused_threshold_default"]),
+        "retrain_min_feedback": float(candidate_policy["retrain_min_feedback"] - current_policy["retrain_min_feedback"]),
+        "drift_z_threshold": float(candidate_policy["drift_z_threshold"] - current_policy["drift_z_threshold"]),
+    }
+
+def _policy_guardrail_report(current_policy: dict[str, float], candidate_policy: dict[str, float]) -> dict:
+    deltas = _policy_deltas(current_policy, candidate_policy)
+    violations = []
+
+    if abs(deltas["fused_threshold_default"]) > POLICY_APPLY_MAX_THRESHOLD_DELTA:
+        violations.append(
+            f"fused_threshold_default delta {deltas['fused_threshold_default']:.4f} exceeds {POLICY_APPLY_MAX_THRESHOLD_DELTA:.4f}"
+        )
+    if abs(deltas["retrain_min_feedback"]) > POLICY_APPLY_MAX_RETRAIN_FEEDBACK_DELTA:
+        violations.append(
+            f"retrain_min_feedback delta {deltas['retrain_min_feedback']:.0f} exceeds {POLICY_APPLY_MAX_RETRAIN_FEEDBACK_DELTA}"
+        )
+    if abs(deltas["drift_z_threshold"]) > POLICY_APPLY_MAX_DRIFT_Z_DELTA:
+        violations.append(
+            f"drift_z_threshold delta {deltas['drift_z_threshold']:.4f} exceeds {POLICY_APPLY_MAX_DRIFT_Z_DELTA:.4f}"
+        )
+
+    return {
+        "passed": len(violations) == 0,
+        "deltas": deltas,
+        "limits": {
+            "fused_threshold_default": float(POLICY_APPLY_MAX_THRESHOLD_DELTA),
+            "retrain_min_feedback": int(POLICY_APPLY_MAX_RETRAIN_FEEDBACK_DELTA),
+            "drift_z_threshold": float(POLICY_APPLY_MAX_DRIFT_Z_DELTA),
+        },
+        "violations": violations,
+    }
+
+def _policy_canary_report(current_policy: dict[str, float], candidate_policy: dict[str, float], canary_points: int) -> dict:
+    requested_points = max(1, int(canary_points))
+    min_points = max(1, int(POLICY_CANARY_MIN_POINTS))
+    window_points = max(requested_points, min_points)
+    fused = np.asarray(score_histories["fused"], dtype=np.float64)
+
+    if fused.size < window_points:
+        return {
+            "ready": False,
+            "passed": False,
+            "required_points": int(window_points),
+            "available_points": int(fused.size),
+            "reason": "insufficient_fused_history",
+        }
+
+    window = fused[-window_points:]
+    current_threshold = float(current_policy["fused_threshold_default"])
+    candidate_threshold = float(candidate_policy["fused_threshold_default"])
+    current_alert_rate = float(np.mean(window > current_threshold))
+    candidate_alert_rate = float(np.mean(window > candidate_threshold))
+    alert_rate_delta = float(candidate_alert_rate - current_alert_rate)
+    passed = abs(alert_rate_delta) <= POLICY_CANARY_MAX_ALERT_RATE_DELTA
+
+    return {
+        "ready": True,
+        "passed": bool(passed),
+        "required_points": int(window_points),
+        "available_points": int(fused.size),
+        "current_alert_rate": current_alert_rate,
+        "candidate_alert_rate": candidate_alert_rate,
+        "alert_rate_delta": alert_rate_delta,
+        "max_allowed_alert_rate_delta": float(POLICY_CANARY_MAX_ALERT_RATE_DELTA),
+        "reason": "ok" if passed else "alert_rate_shift_too_large",
+    }
+
+def _record_policy_apply_entry(
+    suggestion_id: str,
+    action: str,
+    previous_policy: dict[str, float],
+    candidate_policy: dict[str, float],
+    mode: str,
+    note: str,
+    guardrail: dict,
+    canary: dict,
+) -> dict:
+    global policy_apply_seq
+    policy_apply_seq += 1
+    created_at_ms = _now_ms()
+    apply_id = f"policy-apply-{policy_apply_seq}"
+
+    entry = {
+        "id": apply_id,
+        "type": "apply",
+        "created_at_ms": created_at_ms,
+        "suggestion_id": suggestion_id,
+        "action": action,
+        "mode": mode,
+        "note": note,
+        "previous_policy": previous_policy,
+        "applied_policy": candidate_policy,
+        "guardrail": guardrail,
+        "canary": canary,
+        "rolled_back": False,
+    }
+    policy_apply_history.append(entry)
+    policy_apply_state.update({
+        "last_apply_id": apply_id,
+        "last_apply_status": "applied",
+        "last_apply_reason": "policy applied successfully",
+        "last_apply_ts": created_at_ms,
+        "active_policy": dict(candidate_policy),
+    })
+    return entry
+
+def _find_apply_entry(apply_id: Optional[str] = None) -> Optional[dict]:
+    if not policy_apply_history:
+        return None
+    entries = list(policy_apply_history)
+    for item in reversed(entries):
+        if item.get("type") != "apply":
+            continue
+        if item.get("rolled_back", False):
+            continue
+        if apply_id and item.get("id") != apply_id:
+            continue
+        return item
+    return None
+
+def _record_policy_rollback_entry(target: dict, note: str) -> dict:
+    global policy_apply_seq
+    policy_apply_seq += 1
+    created_at_ms = _now_ms()
+    rollback_id = f"policy-rollback-{policy_apply_seq}"
+
+    target["rolled_back"] = True
+    target["rollback_ts_ms"] = created_at_ms
+
+    rollback_entry = {
+        "id": rollback_id,
+        "type": "rollback",
+        "created_at_ms": created_at_ms,
+        "target_apply_id": target.get("id", ""),
+        "suggestion_id": target.get("suggestion_id", ""),
+        "restored_policy": dict(target.get("previous_policy", {})),
+        "note": note,
+    }
+    policy_apply_history.append(rollback_entry)
+    policy_apply_state.update({
+        "last_apply_id": rollback_id,
+        "last_apply_status": "rolled_back",
+        "last_apply_reason": "policy rolled back",
+        "last_apply_ts": created_at_ms,
+        "last_rollback_ts": created_at_ms,
+        "active_policy": dict(runtime_policy),
+    })
+    return rollback_entry
 
 async def _flush_influx_batch(write_api, batch: list[dict]):
     points = []
@@ -569,7 +801,7 @@ def _reset_ingestion_state(dim: int):
         "forecast_z": 0.0,
         "corr_z": 0.0,
         "fused_score": 0.0,
-        "threshold": FUSED_THRESHOLD_DEFAULT,
+        "threshold": float(runtime_policy["fused_threshold_default"]),
     }
 
 def _compute_drift_metrics_from_scores() -> dict:
@@ -602,7 +834,8 @@ def _refresh_retrain_recommendation(force: bool = False):
     prev_recommended = bool(retrain_state.get("recommended", False))
     prev_reason = str(retrain_state.get("reason", ""))
     reasons = []
-    if feedback_counters["total"] >= RETRAIN_MIN_FEEDBACK:
+    retrain_min_feedback = int(runtime_policy["retrain_min_feedback"])
+    if feedback_counters["total"] >= retrain_min_feedback:
         reasons.append(f"operator feedback count reached {feedback_counters['total']}")
     if drift_state["events"] >= RETRAIN_MIN_DRIFT_EVENTS:
         reasons.append(f"drift events reached {drift_state['events']}")
@@ -650,7 +883,8 @@ def _update_drift_state():
 
     now_ts = time.time()
     cooldown_elapsed = (now_ts - drift_state["last_trigger_ts"]) >= DRIFT_COOLDOWN_SEC
-    should_trigger = metrics["z_shift"] >= DRIFT_Z_THRESHOLD and cooldown_elapsed
+    drift_z_threshold = float(runtime_policy["drift_z_threshold"])
+    should_trigger = metrics["z_shift"] >= drift_z_threshold and cooldown_elapsed
     drift_state["triggered"] = bool(should_trigger)
     if should_trigger:
         drift_state["events"] += 1
@@ -759,7 +993,7 @@ def _compute_fused_score(recon_vec: np.ndarray, forecast_vec: np.ndarray, corr_s
     if len(score_histories["fused"]) >= FUSED_THRESHOLD_WARMUP:
         threshold = float(np.percentile(np.asarray(score_histories["fused"], dtype=np.float64), FUSED_THRESHOLD_PERCENTILE))
     else:
-        threshold = FUSED_THRESHOLD_DEFAULT
+        threshold = float(runtime_policy["fused_threshold_default"])
 
     last_score_meta = {
         "recon_score": recon_score,
@@ -1228,7 +1462,7 @@ async def _kafka_consumer_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global model, optimizer, feats_dim, governance_task, kafka_consumer_task, influx_writer_task, influx_queue
+    global model, optimizer, feats_dim, governance_task, kafka_consumer_task, influx_writer_task, influx_queue, rl_policy_manager
     _init_feedback_db()
     feedback_counters.update(_load_feedback_counters())
     model, optimizer, feats_dim = init_model()
@@ -1239,6 +1473,20 @@ async def startup_event():
         influx_writer_task = asyncio.create_task(_influx_writer_loop())
     else:
         influx_queue = None
+
+    if FEATURE_RL_POLICY_SUGGESTIONS:
+        rl_policy_manager = RLPolicyManager(
+            state_path=RL_POLICY_STATE_PATH,
+            learning_rate=RL_POLICY_LEARNING_RATE,
+            discount_factor=RL_POLICY_DISCOUNT,
+            epsilon=RL_POLICY_EPSILON,
+        )
+    else:
+        rl_policy_manager = None
+    policy_apply_state.update({
+        "enabled": FEATURE_RL_POLICY_SUGGESTIONS,
+        "active_policy": _current_policy_snapshot(),
+    })
     governance_task = asyncio.create_task(_governance_monitor_loop())
     if KAFKA_CONSUMER_ENABLED:
         kafka_consumer_task = asyncio.create_task(_kafka_consumer_loop())
@@ -1300,6 +1548,7 @@ async def get_status():
                 "forecast": FUSED_WEIGHT_FORECAST,
                 "corr": FUSED_WEIGHT_CORR,
             },
+            "active_policy": _current_policy_snapshot(),
             "last": last_score_meta,
             "fused_history_size": len(score_histories["fused"]),
         },
@@ -1312,6 +1561,16 @@ async def get_status():
         "features": {
             "anomaly_source_tab": FEATURE_ANOMALY_SOURCE_TAB,
             "rl_policy_suggestions": FEATURE_RL_POLICY_SUGGESTIONS,
+        },
+        "rl_policy": {
+            "enabled": FEATURE_RL_POLICY_SUGGESTIONS,
+            "manager_ready": rl_policy_manager is not None,
+            "state_path": RL_POLICY_STATE_PATH,
+            "last_suggestion": rl_policy_last_suggestion,
+            "apply": {
+                **policy_apply_state,
+                "history_depth": len(policy_apply_history),
+            },
         },
         "kafka": kafka_state,
         "influx": influx_state,
@@ -1577,6 +1836,269 @@ async def retrain_plan():
         "feedback_totals": feedback_counters,
         "drift": drift_state,
         "model_registry": model_registry,
+    }
+
+@app.get("/policy/suggest")
+async def policy_suggest(explore: bool = False):
+    global rl_policy_last_suggestion
+    if not FEATURE_RL_POLICY_SUGGESTIONS:
+        return {
+            "enabled": False,
+            "reason": "FEATURE_RL_POLICY_SUGGESTIONS=false",
+        }
+    if rl_policy_manager is None:
+        return {
+            "enabled": True,
+            "ready": False,
+            "reason": "RL policy manager not initialized",
+        }
+
+    snapshot = _build_rl_metrics_snapshot()
+    current_policy = _current_policy_snapshot()
+    suggestion = rl_policy_manager.suggest(snapshot, current_policy, explore=bool(explore))
+    rl_policy_last_suggestion = suggestion
+
+    _emit_policy_event(
+        "rl_suggestion",
+        "generated",
+        suggestion.get("reason", ""),
+        {
+            "suggestion_id": suggestion.get("suggestion_id", ""),
+            "action": suggestion.get("action", "hold"),
+            "state_key": suggestion.get("state_key", ""),
+            "explore": bool(explore),
+        },
+    )
+
+    return {
+        "enabled": True,
+        "ready": True,
+        "metrics_snapshot": snapshot,
+        "suggestion": suggestion,
+    }
+
+@app.post("/policy/reward")
+async def policy_reward(payload: RLRewardPayload):
+    if not FEATURE_RL_POLICY_SUGGESTIONS:
+        raise HTTPException(status_code=400, detail="rl_policy_suggestions_disabled")
+    if rl_policy_manager is None:
+        raise HTTPException(status_code=503, detail="rl_policy_manager_unavailable")
+
+    next_snapshot = _build_rl_metrics_snapshot()
+    try:
+        result = rl_policy_manager.record_reward(
+            suggestion_id=payload.suggestion_id,
+            reward=float(payload.reward),
+            next_metrics=next_snapshot,
+            note=payload.note or "",
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="suggestion_id_not_found")
+
+    _emit_policy_event(
+        "rl_suggestion",
+        "reward_recorded",
+        payload.note or "reward recorded",
+        {
+            "suggestion_id": payload.suggestion_id,
+            "reward": float(payload.reward),
+            "action": result.get("action", "hold"),
+            "updated_q": float(result.get("updated_q", 0.0)),
+        },
+    )
+
+    return {
+        "status": "recorded",
+        "update": result,
+        "next_metrics": next_snapshot,
+    }
+
+@app.get("/policy/stats")
+async def policy_stats():
+    if not FEATURE_RL_POLICY_SUGGESTIONS:
+        return {
+            "enabled": False,
+            "reason": "FEATURE_RL_POLICY_SUGGESTIONS=false",
+        }
+    if rl_policy_manager is None:
+        return {
+            "enabled": True,
+            "ready": False,
+            "reason": "RL policy manager not initialized",
+        }
+    return {
+        "enabled": True,
+        "ready": True,
+        "stats": rl_policy_manager.get_stats(),
+        "last_suggestion": rl_policy_last_suggestion,
+    }
+
+@app.post("/policy/apply")
+async def policy_apply(payload: RLApplyPayload):
+    if not FEATURE_RL_POLICY_SUGGESTIONS:
+        raise HTTPException(status_code=400, detail="rl_policy_suggestions_disabled")
+    if rl_policy_manager is None:
+        raise HTTPException(status_code=503, detail="rl_policy_manager_unavailable")
+
+    mode = str(payload.mode or "canary").strip().lower()
+    if mode not in {"dry_run", "canary", "force"}:
+        raise HTTPException(status_code=400, detail="invalid_mode")
+
+    pending = rl_policy_manager.get_pending(payload.suggestion_id)
+    if pending is None and rl_policy_last_suggestion and rl_policy_last_suggestion.get("suggestion_id") == payload.suggestion_id:
+        pending = dict(rl_policy_last_suggestion)
+    if pending is None:
+        raise HTTPException(status_code=404, detail="suggestion_id_not_found")
+
+    suggested_policy_raw = pending.get("suggested_policy", {})
+    if not isinstance(suggested_policy_raw, dict):
+        raise HTTPException(status_code=400, detail="invalid_suggestion_payload")
+
+    current_policy = _current_policy_snapshot()
+    candidate_policy = _normalize_policy_values(suggested_policy_raw)
+    guardrail = _policy_guardrail_report(current_policy, candidate_policy)
+    canary = _policy_canary_report(current_policy, candidate_policy, payload.canary_points)
+    note = (payload.note or "").strip()[:512]
+    action = str(pending.get("action", "hold"))
+
+    if not guardrail["passed"]:
+        _emit_policy_event(
+            "rl_policy_apply",
+            "rejected",
+            "guardrail_violation",
+            {
+                "suggestion_id": payload.suggestion_id,
+                "mode": mode,
+                "violations": "; ".join(guardrail["violations"]),
+            },
+        )
+        return {
+            "status": "rejected",
+            "reason": "guardrail_violation",
+            "guardrail": guardrail,
+            "canary": canary,
+            "current_policy": current_policy,
+            "candidate_policy": candidate_policy,
+        }
+
+    if mode == "canary":
+        if not canary.get("ready", False):
+            return {
+                "status": "buffering",
+                "reason": "insufficient_history_for_canary",
+                "guardrail": guardrail,
+                "canary": canary,
+                "current_policy": current_policy,
+                "candidate_policy": candidate_policy,
+            }
+        if not canary.get("passed", False):
+            _emit_policy_event(
+                "rl_policy_apply",
+                "rejected",
+                "canary_failed",
+                {
+                    "suggestion_id": payload.suggestion_id,
+                    "mode": mode,
+                    "alert_rate_delta": float(canary.get("alert_rate_delta", 0.0)),
+                },
+            )
+            return {
+                "status": "rejected",
+                "reason": "canary_failed",
+                "guardrail": guardrail,
+                "canary": canary,
+                "current_policy": current_policy,
+                "candidate_policy": candidate_policy,
+            }
+
+    if mode == "dry_run":
+        return {
+            "status": "dry_run",
+            "guardrail": guardrail,
+            "canary": canary,
+            "current_policy": current_policy,
+            "candidate_policy": candidate_policy,
+        }
+
+    runtime_policy.update(candidate_policy)
+    _refresh_retrain_recommendation(force=True)
+    apply_entry = _record_policy_apply_entry(
+        suggestion_id=payload.suggestion_id,
+        action=action,
+        previous_policy=current_policy,
+        candidate_policy=candidate_policy,
+        mode=mode,
+        note=note,
+        guardrail=guardrail,
+        canary=canary,
+    )
+
+    _emit_policy_event(
+        "rl_policy_apply",
+        "applied",
+        note or "policy applied",
+        {
+            "apply_id": apply_entry.get("id", ""),
+            "suggestion_id": payload.suggestion_id,
+            "mode": mode,
+            "action": action,
+            "fused_threshold_default": float(candidate_policy["fused_threshold_default"]),
+            "retrain_min_feedback": int(candidate_policy["retrain_min_feedback"]),
+            "drift_z_threshold": float(candidate_policy["drift_z_threshold"]),
+        },
+    )
+
+    return {
+        "status": "applied",
+        "entry": apply_entry,
+        "active_policy": _current_policy_snapshot(),
+    }
+
+@app.post("/policy/rollback")
+async def policy_rollback(payload: RLRollbackPayload):
+    if not FEATURE_RL_POLICY_SUGGESTIONS:
+        raise HTTPException(status_code=400, detail="rl_policy_suggestions_disabled")
+
+    target = _find_apply_entry(payload.apply_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="apply_entry_not_found")
+
+    previous_policy_raw = target.get("previous_policy", {})
+    if not isinstance(previous_policy_raw, dict):
+        raise HTTPException(status_code=400, detail="invalid_apply_history")
+
+    restored_policy = _normalize_policy_values(previous_policy_raw)
+    runtime_policy.update(restored_policy)
+    _refresh_retrain_recommendation(force=True)
+
+    note = (payload.note or "").strip()[:512]
+    rollback_entry = _record_policy_rollback_entry(target, note or "manual rollback")
+
+    _emit_policy_event(
+        "rl_policy_apply",
+        "rolled_back",
+        note or "policy rollback",
+        {
+            "rollback_id": rollback_entry.get("id", ""),
+            "target_apply_id": rollback_entry.get("target_apply_id", ""),
+            "suggestion_id": rollback_entry.get("suggestion_id", ""),
+        },
+    )
+
+    return {
+        "status": "rolled_back",
+        "rollback": rollback_entry,
+        "active_policy": _current_policy_snapshot(),
+    }
+
+@app.get("/policy/history")
+async def policy_history(limit: int = Query(20, ge=1, le=200)):
+    entries = list(policy_apply_history)
+    entries.reverse()
+    return {
+        "total": len(entries),
+        "limit": int(limit),
+        "items": entries[:limit],
     }
 
 @app.post("/retrain/mark_applied")
