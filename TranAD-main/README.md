@@ -57,6 +57,29 @@ To stream this demo to Kafka:
 python kafka_producer.py --dataset demo --topic telemetry-stream --hz 1
 ```
 
+## Synthetic Pipeline Dataset Generator (64 signals, production-style)
+Generate a multivariate synthetic dataset tailored for end-to-end pipeline validation with point, contextual, collective/correlation-break, stuck-sensor, and burst-noise anomalies.
+
+```bash
+python generate_synthetic_pipeline_dataset.py --signals 64 --train-steps 12000 --test-steps 6000 --seed 77 --write-checkpoint
+```
+
+This writes directly to the files used by the backend synthetic tab route:
+- `processed/synthetic/train.npy`
+- `processed/synthetic/test.npy`
+- `processed/synthetic/labels.npy`
+
+Additional artifacts:
+- `data/synthetic/pipeline_synthetic_test_64sig.csv`
+- `data/synthetic/pipeline_synthetic_meta.json`
+- `checkpoints/STP_TranAD_synthetic/model.ckpt` (dimension-compatible synthetic checkpoint)
+
+Use it with simulator/producer by switching dataset to `synthetic` from the UI (or `/change_dataset`) and running:
+
+```bash
+python kafka_producer.py --dataset synthetic --topic telemetry-stream --hz 2 --loop
+```
+
 ## Phase 1 Rollout Flags (Non-Breaking)
 Phase 1 introduces gated feature flags so we can ship incrementally without breaking existing clients.
 

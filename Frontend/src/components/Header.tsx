@@ -37,7 +37,7 @@ export function AegisHeader({
         </div>
         <div>
           <div style={{ fontFamily: "'Cinzel', serif", fontSize: 13, fontWeight: 700, color: '#D4A853', letterSpacing: '0.25em', lineHeight: 1, textShadow: '0 0 12px rgba(212,168,83,0.5)' }}>
-            AEGIS
+            UTAU
           </div>
           <div style={{ fontFamily: "'Cinzel', serif", fontSize: 7, fontWeight: 400, color: 'rgba(245,230,200,0.5)', letterSpacing: '0.35em', lineHeight: 1, marginTop: 2 }}>
             IIoT COMMAND
