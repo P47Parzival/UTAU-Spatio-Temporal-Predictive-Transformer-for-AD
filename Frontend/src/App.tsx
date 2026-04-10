@@ -53,6 +53,8 @@ export default function App() {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [alertExplanation, setAlertExplanation] = useState<AlertExplanation | null>(null);
   const [scoreComponents, setScoreComponents] = useState<{ recon: number; forecast: number; corr: number } | null>(null);
+  const [feedbackStatus, setFeedbackStatus] = useState('');
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const datasetTabs = [
     { label: 'SMD', value: 'SMD' },
     { label: 'MSL', value: 'MSL' },
@@ -109,13 +111,58 @@ export default function App() {
 
     return () => ws.close();
   }, []);
+  const submitFeedback = async (wasAnomaly: boolean, calibrateRequested: boolean, note: string) => {
+    const lastPoint = data.length ? data[data.length - 1] : null;
+    const response = await fetch('http://127.0.0.1:8000/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        was_anomaly: wasAnomaly,
+        tick: lastPoint?.tick,
+        note,
+        severity_level: alertExplanation?.severity_level,
+        confidence: alertExplanation?.confidence,
+        anomaly_type: alertExplanation?.anomaly_type,
+        calibrate_requested: calibrateRequested,
+        system_loss: lastPoint?.system_loss,
+        threshold: lastPoint?.threshold,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`feedback submit failed: ${response.status}`);
+    }
+    return response.json();
+  };
+
   const dismissAlarm = async () => {
+    setIsSubmittingFeedback(true);
+    setFeedbackStatus('');
     try {
+      await submitFeedback(false, true, 'Operator dismissed alert and requested adaptive calibration.');
       await fetch('http://localhost:8000/calibrate', { method: 'POST' });
       setSystemState('HEALTHY');
+      setFeedbackStatus('Dismissed as non-anomalous. Feedback captured and calibration executed.');
       console.log('Model weights successfully re-calibrated for concept drift.');
     } catch (err) {
+      setFeedbackStatus('Failed to submit dismissal feedback or calibration request.');
       console.error('Failed to calibrate model', err);
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
+  };
+
+  const acknowledgeAlert = async () => {
+    setIsSubmittingFeedback(true);
+    setFeedbackStatus('');
+    try {
+      await submitFeedback(true, false, 'Operator acknowledged anomaly alert as valid.');
+      setFeedbackStatus('Alert acknowledged. Feedback recorded for adaptive retraining decisions.');
+    } catch (err) {
+      setFeedbackStatus('Failed to submit acknowledgment feedback.');
+      console.error('Failed to submit feedback', err);
+    } finally {
+      setIsSubmittingFeedback(false);
     }
   };
 
@@ -237,16 +284,21 @@ export default function App() {
           <div className="mt-8 space-y-3">
             <button 
               onClick={dismissAlarm}
-              disabled={systemState === 'HEALTHY'}
+              disabled={systemState === 'HEALTHY' || isSubmittingFeedback}
               className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-700 rounded-lg py-3 text-sm font-bold transition-all text-slate-300"
             >
-              DISMISS (Calibrate Drift)
+              {isSubmittingFeedback ? 'PROCESSING...' : 'DISMISS (Calibrate Drift)'}
             </button>
             <button 
+              onClick={acknowledgeAlert}
+              disabled={systemState === 'HEALTHY' || isSubmittingFeedback}
               className="w-full bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-lg py-3 text-sm font-bold transition-all text-white shadow-[0_0_15px_rgba(37,99,235,0.3)]"
             >
               ACKNOWLEDGE ALERT
             </button>
+            {feedbackStatus && (
+              <p className="text-[11px] text-slate-400 leading-relaxed">{feedbackStatus}</p>
+            )}
           </div>
         </div>
 
