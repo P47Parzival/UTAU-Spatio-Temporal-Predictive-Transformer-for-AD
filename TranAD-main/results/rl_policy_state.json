@@ -1,0 +1,29 @@
+{
+  "q_table": {
+    "drift:low|anom:low|fb:low|confirm:mid": {
+      "hold": 0.06,
+      "threshold_up_small": 0.0,
+      "threshold_down_small": 0.0,
+      "threshold_up_medium": 0.0,
+      "threshold_down_medium": 0.0,
+      "retrain_feedback_up": 0.0,
+      "retrain_feedback_down": 0.0,
+      "drift_z_up": 0.0,
+      "drift_z_down": 0.0
+    }
+  },
+  "pending": {},
+  "action_counts": {
+    "hold": 1,
+    "threshold_up_small": 0,
+    "threshold_down_small": 0,
+    "threshold_up_medium": 0,
+    "threshold_down_medium": 0,
+    "retrain_feedback_up": 0,
+    "retrain_feedback_down": 0,
+    "drift_z_up": 0,
+    "drift_z_down": 0
+  },
+  "suggestion_seq": 1,
+  "updated_at_ms": 1775849701898
+}
