@@ -1,0 +1,19 @@
+{
+  "description": "Synthetic industrial telemetry demo with subtle correlation anomaly",
+  "sampling_hz": 1,
+  "duration_seconds": 300,
+  "num_signals": 50,
+  "anomaly_start_second": 90,
+  "anomaly_details": {
+    "signal_12": "Flow-rate amplitude attenuation",
+    "signal_4": "Motor-temp baseline rise",
+    "type": "correlation_break"
+  },
+  "correlation_s4_s12_before": -0.6223236994079465,
+  "correlation_s4_s12_after": -0.5406727842539231,
+  "outputs": {
+    "csv": "data/synthetic/demo_synthetic_50sig_5min.csv",
+    "npy": "processed/synthetic/demo_synthetic_50sig_5min.npy",
+    "labels_npy": "processed/synthetic/demo_synthetic_50sig_5min_labels.npy"
+  }
+}

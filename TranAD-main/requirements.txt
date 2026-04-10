@@ -3,6 +3,7 @@ tqdm
 matplotlib
 dgl
 numpy
+scipy
 SciencePlots
 scikit-learn
 xlrd==1.2.0
@@ -11,3 +12,4 @@ fastapi
 uvicorn
 pydantic
 requests
+aiokafka

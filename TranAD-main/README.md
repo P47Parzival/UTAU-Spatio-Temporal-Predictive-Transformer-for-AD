@@ -17,6 +17,46 @@ pip3 install torch==1.8.1+cpu torchvision==0.9.1+cpu torchaudio===0.8.1 -f https
 pip3 install -r requirements.txt
 ```
 
+## Kafka Streaming (Local KRaft Broker)
+The project now supports Kafka-based ingestion in addition to HTTP ingest.
+
+1. Start local Kafka (from workspace root where `docker-compose.yml` exists):
+```bash
+docker compose up -d kafka
+```
+
+2. Start backend with Kafka consumer enabled:
+```bash
+set KAFKA_CONSUMER_ENABLED=true
+set KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:29092
+set KAFKA_TOPIC=telemetry-stream
+python server.py
+```
+
+3. Start Kafka producer at 1 Hz (new script):
+```bash
+python kafka_producer.py --dataset SMD --topic telemetry-stream --hz 1 --loop
+```
+
+The consumer health is visible in `GET /status` under the `kafka` field.
+
+## Synthetic Demo Dataset Generator (50 signals, 5 minutes)
+Generate a custom demo dataset with a subtle correlation anomaly at 90 seconds:
+```bash
+python generate_synthetic_demo.py --signals 50 --seconds 300 --anomaly-second 90 --normalize
+```
+
+Outputs:
+- `data/synthetic/demo_synthetic_50sig_5min.csv`
+- `processed/synthetic/demo_synthetic_50sig_5min.npy`
+- `processed/synthetic/demo_synthetic_50sig_5min_labels.npy`
+- `data/synthetic/demo_synthetic_50sig_5min_meta.json`
+
+To stream this demo to Kafka:
+```bash
+python kafka_producer.py --dataset demo --topic telemetry-stream --hz 1
+```
+
 ## Dataset Preprocessing
 Preprocess all datasets using the command
 ```bash

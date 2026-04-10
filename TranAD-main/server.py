@@ -15,6 +15,10 @@ import math
 import sqlite3
 from pathlib import Path
 from typing import Optional
+try:
+    from aiokafka import AIOKafkaConsumer
+except ImportError:
+    AIOKafkaConsumer = None
 
 from src.models import STP_TranAD
 
@@ -71,6 +75,14 @@ CALIBRATE_PATIENCE = int(os.getenv("CALIBRATE_PATIENCE", "4"))
 CALIBRATE_TOL = float(os.getenv("CALIBRATE_TOL", "1e-4"))
 CALIBRATE_MAX_SAMPLES = int(os.getenv("CALIBRATE_MAX_SAMPLES", "48"))
 
+# Kafka streaming controls
+KAFKA_CONSUMER_ENABLED = os.getenv("KAFKA_CONSUMER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:29092")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "telemetry-stream")
+KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "stp-tranad-consumer")
+KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
+KAFKA_RECONNECT_BACKOFF_SEC = float(os.getenv("KAFKA_RECONNECT_BACKOFF_SEC", "5.0"))
+
 # Ingestion runtime state
 last_ingest_timestamp_ms = None
 last_valid_vector = []
@@ -112,6 +124,7 @@ last_score_meta = {
 
 feedback_db_lock = asyncio.Lock()
 governance_task = None
+kafka_consumer_task = None
 feedback_counters = {
     "total": 0,
     "confirmed": 0,
@@ -140,6 +153,19 @@ model_registry = {
     "loaded_at_ms": 0,
     "calibration_runs": 0,
     "calibration_rollbacks": 0,
+}
+kafka_state = {
+    "enabled": KAFKA_CONSUMER_ENABLED,
+    "connected": False,
+    "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
+    "topic": KAFKA_TOPIC,
+    "group_id": KAFKA_GROUP_ID,
+    "received_count": 0,
+    "ingested_count": 0,
+    "dropped_messages": 0,
+    "deserialize_errors": 0,
+    "last_message_ts_ms": None,
+    "last_error": "",
 }
 
 class TelemetryData(BaseModel):
@@ -680,6 +706,41 @@ def _sanitize_sensors(raw_sensors: list[float], expected_dim: int):
     }
     return sanitized, "ok"
 
+async def _process_telemetry_event(payload: TelemetryData, source: str = "http"):
+    ingest_stats["total"] += 1
+    async with model_lock:
+        timestamp_ok, timestamp_reason = _validate_timestamp(payload.timestamp_ms)
+        if not timestamp_ok:
+            if source == "kafka":
+                kafka_state["dropped_messages"] += 1
+            return {
+                "status": "dropped",
+                "reason": timestamp_reason,
+            }
+
+        sanitized_sensors, sanitize_reason = _sanitize_sensors(payload.sensors, feats_dim)
+        if sanitized_sensors is None:
+            if source == "kafka":
+                kafka_state["dropped_messages"] += 1
+            return {
+                "status": "dropped",
+                "reason": sanitize_reason,
+            }
+
+        async with data_condition:
+            live_buffer.append(sanitized_sensors)
+            data_condition.notify_all()
+
+    ingest_stats["accepted"] += 1
+    if source == "kafka":
+        kafka_state["ingested_count"] += 1
+    return {
+        "status": "ingested",
+        "degraded": last_ingest_meta["degraded"],
+        "imputed_count": last_ingest_meta["imputed_count"],
+        "outlier_count": last_ingest_meta["outlier_count"],
+    }
+
 def init_model(target_ds=None):
     if target_ds is None:
         target_ds = DATASET
@@ -725,15 +786,73 @@ async def _governance_monitor_loop():
         _update_drift_state()
         _refresh_retrain_recommendation()
 
+async def _kafka_consumer_loop():
+    if not KAFKA_CONSUMER_ENABLED:
+        return
+
+    if AIOKafkaConsumer is None:
+        kafka_state["last_error"] = "aiokafka is not installed"
+        print("WARNING: Kafka consumer is enabled but aiokafka is not installed.")
+        return
+
+    bootstrap_servers = [s.strip() for s in KAFKA_BOOTSTRAP_SERVERS.split(",") if s.strip()]
+
+    while True:
+        consumer = None
+        try:
+            consumer = AIOKafkaConsumer(
+                KAFKA_TOPIC,
+                bootstrap_servers=bootstrap_servers,
+                group_id=KAFKA_GROUP_ID,
+                auto_offset_reset=KAFKA_AUTO_OFFSET_RESET,
+                enable_auto_commit=True,
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+            )
+            await consumer.start()
+            kafka_state["connected"] = True
+            kafka_state["last_error"] = ""
+            print(f"[KAFKA] Consumer connected to topic '{KAFKA_TOPIC}' on {KAFKA_BOOTSTRAP_SERVERS}")
+
+            async for msg in consumer:
+                kafka_state["received_count"] += 1
+                kafka_state["last_message_ts_ms"] = _now_ms()
+
+                try:
+                    payload = msg.value
+                    telemetry = TelemetryData(**payload)
+                except Exception as exc:
+                    kafka_state["deserialize_errors"] += 1
+                    kafka_state["last_error"] = f"deserialize_error: {exc}"
+                    continue
+
+                await _process_telemetry_event(telemetry, source="kafka")
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            kafka_state["connected"] = False
+            kafka_state["last_error"] = str(exc)
+            print(f"[KAFKA] Consumer error: {exc}")
+            await asyncio.sleep(KAFKA_RECONNECT_BACKOFF_SEC)
+        finally:
+            kafka_state["connected"] = False
+            if consumer is not None:
+                try:
+                    await consumer.stop()
+                except Exception:
+                    pass
+
 @app.on_event("startup")
 async def startup_event():
-    global model, optimizer, feats_dim, governance_task
+    global model, optimizer, feats_dim, governance_task, kafka_consumer_task
     _init_feedback_db()
     feedback_counters.update(_load_feedback_counters())
     model, optimizer, feats_dim = init_model()
     _reset_ingestion_state(feats_dim)
     _refresh_retrain_recommendation(force=True)
     governance_task = asyncio.create_task(_governance_monitor_loop())
+    if KAFKA_CONSUMER_ENABLED:
+        kafka_consumer_task = asyncio.create_task(_kafka_consumer_loop())
     
     # Pre-fill buffer with mean zero-state to prevent startup crashes
     for _ in range(101):
@@ -741,39 +860,26 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global governance_task
-    if governance_task is None:
-        return
-    governance_task.cancel()
-    try:
-        await governance_task
-    except asyncio.CancelledError:
-        pass
-    governance_task = None
+    global governance_task, kafka_consumer_task
+    if kafka_consumer_task is not None:
+        kafka_consumer_task.cancel()
+        try:
+            await kafka_consumer_task
+        except asyncio.CancelledError:
+            pass
+        kafka_consumer_task = None
+
+    if governance_task is not None:
+        governance_task.cancel()
+        try:
+            await governance_task
+        except asyncio.CancelledError:
+            pass
+        governance_task = None
 
 @app.post("/ingest")
 async def ingest_telemetry(payload: TelemetryData):
-    ingest_stats["total"] += 1
-    async with model_lock:
-        timestamp_ok, timestamp_reason = _validate_timestamp(payload.timestamp_ms)
-        if not timestamp_ok:
-            return {"status": "dropped", "reason": timestamp_reason}
-
-        sanitized_sensors, sanitize_reason = _sanitize_sensors(payload.sensors, feats_dim)
-        if sanitized_sensors is None:
-            return {"status": "dropped", "reason": sanitize_reason}
-            
-        async with data_condition:
-            live_buffer.append(sanitized_sensors)
-            data_condition.notify_all()
-
-    ingest_stats["accepted"] += 1
-    return {
-        "status": "ingested",
-        "degraded": last_ingest_meta["degraded"],
-        "imputed_count": last_ingest_meta["imputed_count"],
-        "outlier_count": last_ingest_meta["outlier_count"],
-    }
+    return await _process_telemetry_event(payload, source="http")
 
 @app.get("/status")
 async def get_status():
@@ -803,6 +909,7 @@ async def get_status():
             "model_registry": model_registry,
             "feedback": feedback_counters,
         },
+        "kafka": kafka_state,
     }
 
 @app.post("/change_dataset")

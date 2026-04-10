@@ -289,3 +289,8 @@ C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.
  'precision': np.float64(0.9736308118938984),
  'recall': np.float64(0.9999999791666672),
  'threshold': np.float64(3.0733723783346716)}
+
+ $env:KAFKA_CONSUMER_ENABLED="true"
+$env:KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:29092"
+$env:KAFKA_TOPIC="telemetry-stream"
+python .\server.py
