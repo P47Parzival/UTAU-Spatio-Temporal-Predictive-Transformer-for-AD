@@ -7,6 +7,9 @@ data/MSDS/metrics
 data/MSDS/train.csv
 data/MSDS/test.csv
 
+data
+checkpoints
+
 # C extensions
 *.so
 
