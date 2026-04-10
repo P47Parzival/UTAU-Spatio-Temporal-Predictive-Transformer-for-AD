@@ -88,6 +88,71 @@ Additive APIs for historical anomaly exploration are now available:
 
 Response payloads include severity, confidence, anomaly type, contributor ranking, score components, and optional `anomaly_source` details when enabled.
 
+## Phase 5 InfluxDB Persistence (Telemetry + Governance)
+The backend can now write streaming and governance events to InfluxDB with a non-blocking queue writer.
+
+1. Start local services (from workspace root):
+```bash
+docker compose up -d kafka influxdb
+```
+
+2. Start backend with Influx enabled:
+```bash
+set INFLUX_ENABLED=true
+set INFLUX_URL=http://127.0.0.1:8086
+set INFLUX_TOKEN=catch-dev-token
+set INFLUX_ORG=catch-org
+set INFLUX_BUCKET=catch-telemetry
+python server.py
+```
+
+3. Verify health in `GET /status` under `influx`.
+
+Measurements emitted:
+- `anomaly_scores`
+- `anomaly_events`
+- `operator_feedback`
+- `drift_events`
+- `ingest_quality`
+- `policy_events`
+
+Write failures are captured into `results/influx_deadletter.ndjson` for later replay.
+
+## Phase 7 Backfill Baseline Operational History
+Backfill existing feedback data and checkpoint-derived training metadata into InfluxDB:
+
+1. Dry-run (no writes):
+```bash
+python scripts/backfill_influxdb.py --dry-run --preview
+```
+
+Optional verification-only check:
+```bash
+python scripts/backfill_influxdb.py --verify-only
+```
+
+2. Execute backfill:
+```bash
+set INFLUX_URL=http://127.0.0.1:8086
+set INFLUX_TOKEN=catch-dev-token
+set INFLUX_ORG=catch-org
+set INFLUX_BUCKET=catch-telemetry
+python scripts/backfill_influxdb.py
+```
+
+Execute and verify in one run:
+```bash
+python scripts/backfill_influxdb.py --verify
+```
+
+Backfilled measurements:
+- `operator_feedback`
+- `model_training` (checkpoint metadata)
+
+Verification:
+- Check script summary counts and non-zero `write_points_succeeded`.
+- Confirm backend `GET /status` still reports healthy `influx` state.
+
 ## Dataset Preprocessing
 Preprocess all datasets using the command
 ```bash

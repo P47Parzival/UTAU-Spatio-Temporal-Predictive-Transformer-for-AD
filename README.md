@@ -290,7 +290,14 @@ C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.
  'recall': np.float64(0.9999999791666672),
  'threshold': np.float64(3.0733723783346716)}
 
- $env:KAFKA_CONSUMER_ENABLED="true"
+$env:KAFKA_CONSUMER_ENABLED="true"
 $env:KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:29092"
 $env:KAFKA_TOPIC="telemetry-stream"
 python .\server.py
+
+set INFLUX_ENABLED=true
+set INFLUX_URL=http://127.0.0.1:8086
+set INFLUX_TOKEN=catch-dev-token
+set INFLUX_ORG=catch-org
+set INFLUX_BUCKET=catch-telemetry
+python server.py

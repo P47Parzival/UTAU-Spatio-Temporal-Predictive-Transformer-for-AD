@@ -19,6 +19,12 @@ try:
     from aiokafka import AIOKafkaConsumer
 except ImportError:
     AIOKafkaConsumer = None
+try:
+    from influxdb_client import InfluxDBClient, Point, WritePrecision
+except ImportError:
+    InfluxDBClient = None
+    Point = None
+    WritePrecision = None
 
 from src.models import STP_TranAD
 
@@ -87,6 +93,17 @@ KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "stp-tranad-consumer")
 KAFKA_AUTO_OFFSET_RESET = os.getenv("KAFKA_AUTO_OFFSET_RESET", "latest")
 KAFKA_RECONNECT_BACKOFF_SEC = float(os.getenv("KAFKA_RECONNECT_BACKOFF_SEC", "5.0"))
 
+# Phase 5 InfluxDB controls
+INFLUX_ENABLED = _env_flag("INFLUX_ENABLED")
+INFLUX_URL = os.getenv("INFLUX_URL", "http://127.0.0.1:8086")
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "")
+INFLUX_ORG = os.getenv("INFLUX_ORG", "catch-org")
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "catch-telemetry")
+INFLUX_BATCH_SIZE = int(os.getenv("INFLUX_BATCH_SIZE", "100"))
+INFLUX_FLUSH_INTERVAL_SEC = float(os.getenv("INFLUX_FLUSH_INTERVAL_SEC", "2.0"))
+INFLUX_QUEUE_MAXSIZE = int(os.getenv("INFLUX_QUEUE_MAXSIZE", "5000"))
+INFLUX_DEADLETTER_PATH = os.getenv("INFLUX_DEADLETTER_PATH", os.path.join("results", "influx_deadletter.ndjson"))
+
 # Phase 1 rollout flags
 FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB")
 FEATURE_RL_POLICY_SUGGESTIONS = _env_flag("FEATURE_RL_POLICY_SUGGESTIONS")
@@ -138,6 +155,8 @@ last_score_meta = {
 feedback_db_lock = asyncio.Lock()
 governance_task = None
 kafka_consumer_task = None
+influx_writer_task = None
+influx_queue = None
 feedback_counters = {
     "total": 0,
     "confirmed": 0,
@@ -180,6 +199,20 @@ kafka_state = {
     "last_message_ts_ms": None,
     "last_error": "",
 }
+influx_state = {
+    "enabled": INFLUX_ENABLED,
+    "configured": bool(INFLUX_TOKEN and INFLUX_ORG and INFLUX_BUCKET),
+    "connected": False,
+    "url": INFLUX_URL,
+    "org": INFLUX_ORG,
+    "bucket": INFLUX_BUCKET,
+    "written_points": 0,
+    "dropped_points": 0,
+    "write_errors": 0,
+    "queue_size": 0,
+    "last_write_ms": None,
+    "last_error": "",
+}
 
 class TelemetryData(BaseModel):
     timestamp_ms: int
@@ -205,6 +238,163 @@ class RetrainAppliedPayload(BaseModel):
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+def _safe_float(value):
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isfinite(f):
+        return f
+    return None
+
+def _append_influx_deadletter(batch: list[dict], reason: str):
+    path = Path(INFLUX_DEADLETTER_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "created_at_ms": _now_ms(),
+        "reason": reason,
+        "count": len(batch),
+        "records": batch,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+
+def _influx_record(measurement: str, tags: dict, fields: dict, timestamp_ms: Optional[int] = None):
+    if Point is None or WritePrecision is None:
+        return None
+    point = Point(measurement)
+    for key, value in (tags or {}).items():
+        if value is None:
+            continue
+        point = point.tag(str(key), str(value))
+    for key, value in (fields or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            point = point.field(str(key), value)
+        else:
+            point = point.field(str(key), str(value))
+    ts_ms = int(timestamp_ms) if timestamp_ms is not None else _now_ms()
+    point = point.time(ts_ms * 1_000_000, WritePrecision.NS)
+    return point
+
+def _enqueue_influx(measurement: str, tags: dict, fields: dict, timestamp_ms: Optional[int] = None):
+    if not INFLUX_ENABLED:
+        return
+    global influx_queue
+    if influx_queue is None:
+        return
+    try:
+        influx_queue.put_nowait({
+            "measurement": measurement,
+            "tags": tags,
+            "fields": fields,
+            "timestamp_ms": int(timestamp_ms) if timestamp_ms is not None else _now_ms(),
+        })
+        influx_state["queue_size"] = influx_queue.qsize()
+    except asyncio.QueueFull:
+        influx_state["dropped_points"] += 1
+        influx_state["last_error"] = "queue_full"
+
+def _emit_policy_event(event_type: str, action: str, reason: str = "", metadata: Optional[dict] = None):
+    fields = {
+        "event_type": event_type,
+        "action": action,
+        "reason": reason,
+        "feedback_total": int(feedback_counters.get("total", 0)),
+        "drift_events": int(drift_state.get("events", 0)),
+        "recommended": bool(retrain_state.get("recommended", False)),
+    }
+    if metadata:
+        for k, v in metadata.items():
+            if isinstance(v, (bool, int, float, str)):
+                fields[k] = v
+            elif v is not None:
+                fields[k] = str(v)
+
+    _enqueue_influx(
+        "policy_events",
+        {
+            "dataset": DATASET,
+            "model_version": model_registry.get("model_version", "default"),
+            "event_type": event_type,
+        },
+        fields,
+    )
+
+async def _flush_influx_batch(write_api, batch: list[dict]):
+    points = []
+    for item in batch:
+        rec = _influx_record(
+            item.get("measurement", "events"),
+            item.get("tags", {}),
+            item.get("fields", {}),
+            item.get("timestamp_ms"),
+        )
+        if rec is not None:
+            points.append(rec)
+
+    if not points:
+        return
+
+    try:
+        await asyncio.to_thread(write_api.write, bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=points)
+        influx_state["written_points"] += len(points)
+        influx_state["last_write_ms"] = _now_ms()
+        influx_state["last_error"] = ""
+    except Exception as exc:
+        influx_state["write_errors"] += 1
+        influx_state["dropped_points"] += len(points)
+        influx_state["last_error"] = str(exc)
+        await asyncio.to_thread(_append_influx_deadletter, batch, str(exc))
+
+async def _influx_writer_loop():
+    if not INFLUX_ENABLED:
+        return
+    if InfluxDBClient is None:
+        influx_state["last_error"] = "influxdb-client is not installed"
+        return
+    if not (INFLUX_TOKEN and INFLUX_ORG and INFLUX_BUCKET):
+        influx_state["last_error"] = "missing Influx configuration"
+        return
+
+    client = None
+    try:
+        client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG, timeout=5000)
+        write_api = client.write_api()
+        influx_state["connected"] = True
+        influx_state["last_error"] = ""
+
+        while True:
+            batch = []
+            item = await influx_queue.get()
+            batch.append(item)
+            start_ts = time.time()
+
+            while len(batch) < INFLUX_BATCH_SIZE:
+                remaining = INFLUX_FLUSH_INTERVAL_SEC - (time.time() - start_ts)
+                if remaining <= 0:
+                    break
+                try:
+                    nxt = await asyncio.wait_for(influx_queue.get(), timeout=remaining)
+                    batch.append(nxt)
+                except asyncio.TimeoutError:
+                    break
+
+            await _flush_influx_batch(write_api, batch)
+            influx_state["queue_size"] = influx_queue.qsize()
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        influx_state["connected"] = False
+        influx_state["write_errors"] += 1
+        influx_state["last_error"] = str(exc)
+    finally:
+        influx_state["connected"] = False
+        if client is not None:
+            await asyncio.to_thread(client.close)
 
 def _init_feedback_db():
     db_path = Path(FEEDBACK_DB_PATH)
@@ -409,6 +599,8 @@ def _compute_drift_metrics_from_scores() -> dict:
 
 def _refresh_retrain_recommendation(force: bool = False):
     now_ts = time.time()
+    prev_recommended = bool(retrain_state.get("recommended", False))
+    prev_reason = str(retrain_state.get("reason", ""))
     reasons = []
     if feedback_counters["total"] >= RETRAIN_MIN_FEEDBACK:
         reasons.append(f"operator feedback count reached {feedback_counters['total']}")
@@ -424,6 +616,25 @@ def _refresh_retrain_recommendation(force: bool = False):
     else:
         retrain_state["recommended"] = False
         retrain_state["reason"] = ""
+
+    if retrain_state["recommended"] and (not prev_recommended or retrain_state["reason"] != prev_reason):
+        _emit_policy_event(
+            "retrain_recommendation",
+            "raised",
+            retrain_state["reason"],
+            {
+                "forced_refresh": bool(force),
+            },
+        )
+    elif prev_recommended and not retrain_state["recommended"]:
+        _emit_policy_event(
+            "retrain_recommendation",
+            "cleared",
+            "retrain criteria no longer met",
+            {
+                "previous_reason": prev_reason,
+            },
+        )
 
 def _update_drift_state():
     global drift_state
@@ -444,6 +655,19 @@ def _update_drift_state():
     if should_trigger:
         drift_state["events"] += 1
         drift_state["last_trigger_ts"] = now_ts
+        _enqueue_influx(
+            "drift_events",
+            {
+                "dataset": DATASET,
+                "model_version": model_registry.get("model_version", "default"),
+            },
+            {
+                "z_shift": float(drift_state["z_shift"]),
+                "baseline_mean": float(drift_state["baseline_mean"]),
+                "recent_mean": float(drift_state["recent_mean"]),
+                "events": int(drift_state["events"]),
+            },
+        )
 
     _refresh_retrain_recommendation()
 
@@ -927,6 +1151,24 @@ async def _governance_monitor_loop():
         await asyncio.sleep(DRIFT_MONITOR_INTERVAL_SEC)
         _update_drift_state()
         _refresh_retrain_recommendation()
+        _enqueue_influx(
+            "ingest_quality",
+            {
+                "dataset": DATASET,
+            },
+            {
+                "total": int(ingest_stats["total"]),
+                "accepted": int(ingest_stats["accepted"]),
+                "dropped_dimension_mismatch": int(ingest_stats["dropped_dimension_mismatch"]),
+                "dropped_invalid_timestamp": int(ingest_stats["dropped_invalid_timestamp"]),
+                "out_of_order": int(ingest_stats["out_of_order"]),
+                "clock_skew": int(ingest_stats["clock_skew"]),
+                "imputed_values": int(ingest_stats["imputed_values"]),
+                "outlier_values": int(ingest_stats["outlier_values"]),
+                "degraded_events": int(ingest_stats["degraded_events"]),
+                "imputed_ratio": float(last_ingest_meta["imputed_ratio"]),
+            },
+        )
 
 async def _kafka_consumer_loop():
     if not KAFKA_CONSUMER_ENABLED:
@@ -986,12 +1228,17 @@ async def _kafka_consumer_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global model, optimizer, feats_dim, governance_task, kafka_consumer_task
+    global model, optimizer, feats_dim, governance_task, kafka_consumer_task, influx_writer_task, influx_queue
     _init_feedback_db()
     feedback_counters.update(_load_feedback_counters())
     model, optimizer, feats_dim = init_model()
     _reset_ingestion_state(feats_dim)
     _refresh_retrain_recommendation(force=True)
+    if INFLUX_ENABLED:
+        influx_queue = asyncio.Queue(maxsize=INFLUX_QUEUE_MAXSIZE)
+        influx_writer_task = asyncio.create_task(_influx_writer_loop())
+    else:
+        influx_queue = None
     governance_task = asyncio.create_task(_governance_monitor_loop())
     if KAFKA_CONSUMER_ENABLED:
         kafka_consumer_task = asyncio.create_task(_kafka_consumer_loop())
@@ -1002,7 +1249,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global governance_task, kafka_consumer_task
+    global governance_task, kafka_consumer_task, influx_writer_task, influx_queue
     if kafka_consumer_task is not None:
         kafka_consumer_task.cancel()
         try:
@@ -1019,6 +1266,15 @@ async def shutdown_event():
             pass
         governance_task = None
 
+    if influx_writer_task is not None:
+        influx_writer_task.cancel()
+        try:
+            await influx_writer_task
+        except asyncio.CancelledError:
+            pass
+        influx_writer_task = None
+    influx_queue = None
+
 @app.post("/ingest")
 async def ingest_telemetry(payload: TelemetryData):
     return await _process_telemetry_event(payload, source="http")
@@ -1027,6 +1283,8 @@ async def ingest_telemetry(payload: TelemetryData):
 async def get_status():
     _update_drift_state()
     _refresh_retrain_recommendation()
+    if influx_queue is not None:
+        influx_state["queue_size"] = influx_queue.qsize()
     return {
         "active_dataset": DATASET,
         "dimensions": feats_dim,
@@ -1056,6 +1314,7 @@ async def get_status():
             "rl_policy_suggestions": FEATURE_RL_POLICY_SUGGESTIONS,
         },
         "kafka": kafka_state,
+        "influx": influx_state,
     }
 
 @app.get("/anomalies")
@@ -1225,6 +1484,19 @@ async def trigger_online_learning():
             model_registry["calibration_runs"] += 1
             status = "calibrated"
 
+    _emit_policy_event(
+        "calibration",
+        status,
+        "adaptive calibration executed",
+        {
+            "rollback": bool(rollback),
+            "initial_loss": float(initial_loss),
+            "final_loss": float(final_loss),
+            "best_loss": float(best_loss),
+            "steps": int(len(loss_trace)),
+        },
+    )
+
     return {
         "status": status,
         "initial_loss": initial_loss,
@@ -1261,6 +1533,25 @@ async def submit_operator_feedback(payload: FeedbackPayload):
     feedback_counters.update(latest_counts)
     _refresh_retrain_recommendation(force=False)
 
+    _enqueue_influx(
+        "operator_feedback",
+        {
+            "dataset": DATASET,
+            "model_version": model_registry.get("model_version", "default"),
+            "anomaly_type": payload.anomaly_type or "unknown",
+            "severity_level": payload.severity_level or "unknown",
+        },
+        {
+            "was_anomaly": bool(payload.was_anomaly),
+            "tick": int(payload.tick) if payload.tick is not None else -1,
+            "confidence": _safe_float(payload.confidence),
+            "system_loss": _safe_float(payload.system_loss),
+            "threshold": _safe_float(payload.threshold),
+            "calibrate_requested": bool(payload.calibrate_requested),
+        },
+        timestamp_ms=record["created_at_ms"],
+    )
+
     return {
         "status": "recorded",
         "id": row_id,
@@ -1295,6 +1586,16 @@ async def retrain_mark_applied(payload: RetrainAppliedPayload):
     retrain_state["last_applied_ts"] = time.time()
     if payload.model_version:
         model_registry["model_version"] = payload.model_version
+
+    _emit_policy_event(
+        "retrain_application",
+        "acknowledged",
+        payload.note or "retrain marked as applied",
+        {
+            "model_version": payload.model_version or model_registry.get("model_version", "default"),
+            "last_applied_ts": float(retrain_state["last_applied_ts"]),
+        },
+    )
     return {
         "status": "acknowledged",
         "last_applied_ts": retrain_state["last_applied_ts"],
@@ -1411,6 +1712,44 @@ async def websocket_endpoint(websocket: WebSocket):
                     "investigation_hints": hints,
                 },
             }
+
+            _enqueue_influx(
+                "anomaly_scores",
+                {
+                    "dataset": DATASET,
+                    "model_version": model_registry.get("model_version", "default"),
+                },
+                {
+                    "tick": int(current_tick),
+                    "fused_score": float(fused_score),
+                    "threshold": float(fused_threshold),
+                    "recon_score": float(last_score_meta["recon_score"]),
+                    "forecast_score": float(last_score_meta["forecast_score"]),
+                    "corr_score": float(last_score_meta["corr_score"]),
+                    "is_anomalous": bool(is_anomalous),
+                    "severity_score": int(severity_score),
+                    "confidence": float(confidence),
+                },
+            )
+
+            if is_anomalous:
+                _enqueue_influx(
+                    "anomaly_events",
+                    {
+                        "dataset": DATASET,
+                        "model_version": model_registry.get("model_version", "default"),
+                        "anomaly_type": anomaly_type,
+                        "severity_level": severity_level,
+                    },
+                    {
+                        "tick": int(current_tick),
+                        "fused_score": float(fused_score),
+                        "threshold": float(fused_threshold),
+                        "severity_score": int(severity_score),
+                        "confidence": float(confidence),
+                        "duration_steps": int(anomaly_streak),
+                    },
+                )
 
             if anomaly_source_info is not None:
                 payload["anomaly_source"] = anomaly_source_info

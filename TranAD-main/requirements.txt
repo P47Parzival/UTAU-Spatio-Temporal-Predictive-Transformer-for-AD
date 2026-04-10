@@ -13,3 +13,4 @@ uvicorn
 pydantic
 requests
 aiokafka
+influxdb-client
