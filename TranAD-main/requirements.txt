@@ -14,3 +14,4 @@ pydantic
 requests
 aiokafka
 influxdb-client
+paho-mqtt

@@ -6,8 +6,8 @@
       "protocol": "kafka",
       "endpoint": "127.0.0.1:29092",
       "topic": "telemetry-stream",
-      "dataset": "synthetic",
-      "expected_dimensions": 39,
+      "dataset": "ESP32",
+      "expected_dimensions": 64,
       "enabled": true,
       "is_active": true,
       "notes": null,
@@ -17,7 +17,7 @@
       },
       "auth": {},
       "created_at_ms": 1775868056907,
-      "updated_at_ms": 1775869210385
+      "updated_at_ms": 1775879942083
     },
     {
       "id": 2,
@@ -40,5 +40,5 @@
     }
   ],
   "next_id": 3,
-  "updated_at_ms": 1775869211183
+  "updated_at_ms": 1775879942083
 }

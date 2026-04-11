@@ -356,8 +356,11 @@ def _append_influx_deadletter(batch: list[dict], reason: str):
         f.write(json.dumps(payload) + "\n")
 
 _SOURCE_PROTOCOLS = {"kafka", "mqtt", "opcua", "http"}
-_SOURCE_DATASETS = {"SMD", "MSL", "SMAP", "synthetic"}
+_SOURCE_DATASETS = {"SMD", "MSL", "SMAP", "ESP32", "synthetic"}
 _SOURCE_SECRET_KEYS = ("token", "password", "secret", "key")
+_MODEL_DATASET_ALIASES = {
+    "ESP32": "synthetic",
+}
 
 def _mask_secret(value: Any) -> str:
     s = str(value)
@@ -409,6 +412,9 @@ def _normalize_dataset_name(dataset: Optional[str]) -> Optional[str]:
     up = text.upper()
     return up
 
+def _runtime_dataset_alias(dataset: str) -> str:
+    return _MODEL_DATASET_ALIASES.get(dataset, dataset)
+
 def _validate_source_payload(raw: dict[str, Any], partial: bool) -> tuple[dict[str, Any], list[str]]:
     normalized = {}
     errors = []
@@ -444,7 +450,7 @@ def _validate_source_payload(raw: dict[str, Any], partial: bool) -> tuple[dict[s
     if "dataset" in raw:
         dataset = _normalize_dataset_name(raw.get("dataset"))
         if dataset is not None and dataset not in _SOURCE_DATASETS:
-            errors.append("dataset must be one of SMD, MSL, SMAP, synthetic")
+            errors.append("dataset must be one of SMD, MSL, SMAP, ESP32, synthetic")
         else:
             normalized["dataset"] = dataset
     elif not partial:
@@ -1128,7 +1134,8 @@ def _load_recent_feedback(limit: int = 20) -> list[dict]:
     return result
 
 def _resolve_checkpoint_and_version(target_ds: str):
-    folder = Path(f"checkpoints/{MODEL_NAME}_{target_ds}")
+    storage_ds = _runtime_dataset_alias(target_ds)
+    folder = Path(f"checkpoints/{MODEL_NAME}_{storage_ds}")
     fallback_ckpt = folder / "model.ckpt"
     registry_file = folder / "registry.json"
     model_version = "default"
@@ -1735,17 +1742,18 @@ def init_model(target_ds=None):
     if target_ds is None:
         target_ds = DATASET
     print(f"Loading STP-TranAD Model for {target_ds}...")
+    storage_ds = _runtime_dataset_alias(target_ds)
     ckpt_path, model_version = _resolve_checkpoint_and_version(target_ds)
     
     # Identify target dynamic files
-    if target_ds == 'SMD':
-        test_arr = np.load(f'processed/{target_ds}/machine-1-1_test.npy')
-    elif target_ds == 'MSL':
-        test_arr = np.load(f'processed/{target_ds}/C-1_test.npy')
-    elif target_ds == 'SMAP':
-        test_arr = np.load(f'processed/{target_ds}/A-1_test.npy')
-    elif target_ds == 'synthetic':
-        test_arr = np.load(f'processed/{target_ds}/test.npy')
+    if storage_ds == 'SMD':
+        test_arr = np.load(f'processed/{storage_ds}/machine-1-1_test.npy')
+    elif storage_ds == 'MSL':
+        test_arr = np.load(f'processed/{storage_ds}/C-1_test.npy')
+    elif storage_ds == 'SMAP':
+        test_arr = np.load(f'processed/{storage_ds}/A-1_test.npy')
+    elif storage_ds == 'synthetic':
+        test_arr = np.load(f'processed/{storage_ds}/test.npy')
     else:
         raise ValueError(f"Unsupported dataset for STP server: {target_ds}")
         
@@ -2191,7 +2199,7 @@ async def get_feedback_history_api(limit: int = 5):
 @app.post("/change_dataset")
 async def trigger_dataset_swap(req: SwapRequest):
     global DATASET, model, optimizer, feats_dim
-    if req.dataset not in ['SMD', 'MSL', 'SMAP', 'synthetic']:
+    if req.dataset not in ['SMD', 'MSL', 'SMAP', 'ESP32', 'synthetic']:
         return {"error": "Invalid Dataset"}
     if req.dataset == DATASET:
         return {"status": "noop", "new_dataset": DATASET, "new_dim": feats_dim}

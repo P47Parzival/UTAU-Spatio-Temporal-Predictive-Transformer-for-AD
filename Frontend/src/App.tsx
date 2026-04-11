@@ -30,6 +30,7 @@ const DATASET_TABS = [
   { label: 'SMD',       value: 'SMD'       },
   { label: 'MSL',       value: 'MSL'       },
   { label: 'SMAP',      value: 'SMAP'      },
+  { label: 'ESP32',     value: 'ESP32'     },
   { label: 'Synthetic', value: 'synthetic' },
 ];
 
