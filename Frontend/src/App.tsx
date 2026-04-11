@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { AlertTriangle, X } from 'lucide-react';
 import { UtauHeader }  from './components/Header';
 import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
@@ -57,6 +59,11 @@ export default function App() {
   const [isSubmittingFeedback,  setIsSubmittingFeedback]  = useState(false);
   const [activeFeatureTab,      setActiveFeatureTab]      = useState<'live' | 'anomaly-source' | 'data-source'>('live');
   const [currentPath,           setCurrentPath]           = useState(() => window.location.pathname === '/dashboard' ? '/dashboard' : '/landing');
+  
+// Custom Visual Notifications
+  const [anomalyPopup, setAnomalyPopup] = useState<{ show: boolean; msg: string; dataset: string }>({ show: false, msg: '', dataset: '' });
+  const hasAlertedRef = useRef(false);
+
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -111,9 +118,27 @@ export default function App() {
         if (payload.anomaly_source)    setAnomalySource(payload.anomaly_source);
         if (payload.score_components)  setScoreComponents(payload.score_components);
         setData(prev => { const n = [...prev, newPoint]; if (n.length > 50) n.shift(); return n; });
-        if (payload.is_anomalous)                               setSystemState('CRITICAL');
-        else if (payload.system_loss > payload.threshold * 0.8) setSystemState('WARNING');
-        else                                                    setSystemState('HEALTHY');
+        
+        if (payload.is_anomalous) {
+          setSystemState('CRITICAL');
+          if (!hasAlertedRef.current) {
+            hasAlertedRef.current = true;
+            const type = payload.alert_explanation?.anomaly_type || 'unauthorized_deviation';
+            setAnomalyPopup({ show: true, msg: `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`, dataset: activeDataset });
+            // Auto-dismiss after 4 seconds
+            setTimeout(() => {
+              setAnomalyPopup(prev => ({ ...prev, show: false }));
+            }, 4000);
+          }
+        }
+        else if (payload.system_loss > payload.threshold * 0.8) {
+          setSystemState('WARNING');
+        }
+        else {
+          setSystemState('HEALTHY');
+          hasAlertedRef.current = false; // Reset trigger so next anomaly alerts again
+          setAnomalyPopup(prev => ({ ...prev, show: false }));
+        }
       };
     };
 
@@ -186,7 +211,9 @@ export default function App() {
   const hotSensors = new Set<string>(alertExplanation?.top_contributors.map(c => c.sensor) ?? []);
 
   if (currentPath === '/landing') {
-    return <LandingPage onLaunch={() => navigateTo('/dashboard')} />;
+    return <LandingPage onLaunch={() => {
+      navigateTo('/dashboard');
+    }} />;
   }
   
   if (currentPath === '/ai-chat') {
@@ -201,6 +228,39 @@ export default function App() {
 
   return (
     <div id="utau-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
+      
+      {/* ── Custom Animated Anomaly Popup ── */}
+      <AnimatePresence>
+        {anomalyPopup.show && (
+          <motion.div
+            initial={{ y: -100, opacity: 0, scale: 0.95 }}
+            animate={{ y: 20, opacity: 1, scale: 1 }}
+            exit={{ y: -50, opacity: 0, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+            style={{
+              position: 'fixed', top: 0, left: '50%', x: '-50%', zIndex: 9999,
+              background: 'rgba(30, 8, 8, 0.95)', backdropFilter: 'blur(12px)',
+              border: '1px solid var(--crimson)', borderRadius: 12, padding: '12px 24px',
+              boxShadow: '0 8px 32px rgba(220, 20, 60, 0.4), inset 0 0 16px rgba(220, 20, 60, 0.2)',
+              display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer'
+            }}
+            onClick={() => setAnomalyPopup(prev => ({ ...prev, show: false }))}
+          >
+            <div style={{ padding: 10, background: 'rgba(220, 20, 60, 0.2)', borderRadius: 50 }}>
+              <AlertTriangle color="var(--crimson)" size={28} style={{ animation: 'golden-breathe 1s infinite' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ color: 'var(--crimson)', fontFamily: "'Cinzel', serif", fontWeight: 800, letterSpacing: '0.15em', fontSize: 13 }}>
+                SYSTEM SEVERITY: CRITICAL
+              </span>
+              <span style={{ color: 'var(--text-secondary)', fontFamily: "'Cormorant Garamond', serif", fontSize: 15, marginTop: 2 }}>
+                {anomalyPopup.msg} IN <strong style={{ color: 'var(--text-primary)' }}>{anomalyPopup.dataset.toUpperCase()}</strong>
+              </span>
+            </div>
+            <X size={16} color="var(--text-dim)" style={{ marginLeft: 16 }} />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Header */}
       <div style={{ height: 56, flexShrink: 0 }} className="hud-header">
