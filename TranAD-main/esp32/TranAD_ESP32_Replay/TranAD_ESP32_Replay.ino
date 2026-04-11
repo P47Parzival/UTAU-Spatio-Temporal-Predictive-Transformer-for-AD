@@ -9,15 +9,15 @@
 #include "esp32_replay.h"
 
 // ===================== User Config =====================
-static const char* WIFI_SSID = "Tu Taaru Vapar";
-static const char* WIFI_PASSWORD = "veersharma";
+static const char* WIFI_SSID = "Redmi Note 9 Pro Max";
+static const char* WIFI_PASSWORD = "h4p2g6u6";
 
 static const uint16_t MQTT_PORT = 1883;
 static const char* MQTT_TOPIC = "esp32/telemetry";
 static const char* MQTT_CLIENT_ID = "tranad-esp32-device";
 static const char* SOURCE_ID = "esp32-001";
 static const uint16_t MQTT_BUFFER_SIZE = 4096;
-static const char* MQTT_BROKER_PRIMARY = "10.59.244.47";
+static const char* MQTT_BROKER_PRIMARY = "192.168.249.187";
 static const char* MQTT_BROKER_FALLBACK = "broker.hivemq.com";
 static const uint8_t MQTT_CONNECT_RETRIES_BEFORE_FAILOVER = 5;
 
