@@ -24,7 +24,7 @@ except ImportError as exc:  # pragma: no cover - runtime guard
 
 
 DEFAULT_MQTT_HOST = os.getenv("ESP32_MQTT_HOST", "127.0.0.1")
-DEFAULT_MQTT_HOSTS = os.getenv("ESP32_MQTT_HOSTS", "127.0.0.1,broker.hivemq.com")
+DEFAULT_MQTT_HOSTS = os.getenv("ESP32_MQTT_HOSTS", "")
 DEFAULT_MQTT_PORT = int(os.getenv("ESP32_MQTT_PORT", "1883"))
 DEFAULT_MQTT_TOPIC = os.getenv("ESP32_MQTT_TOPIC", "esp32/telemetry")
 DEFAULT_KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:29092")
@@ -124,7 +124,10 @@ async def run_bridge(args: argparse.Namespace) -> None:
     stats.started_at_ms = int(time.time() * 1000)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
-    mqtt_hosts = [h.strip() for h in (args.mqtt_hosts or args.mqtt_host).split(",") if h.strip()]
+    if str(args.mqtt_hosts).strip():
+        mqtt_hosts = [h.strip() for h in str(args.mqtt_hosts).split(",") if h.strip()]
+    else:
+        mqtt_hosts = [str(args.mqtt_host).strip()]
     if not mqtt_hosts:
         mqtt_hosts = [DEFAULT_MQTT_HOST]
     mqtt_host_index = 0
