@@ -9,17 +9,19 @@
 #include "esp32_replay.h"
 
 // ===================== User Config =====================
-static const char* WIFI_SSID = "Redmi Note 9 Pro Max";
-static const char* WIFI_PASSWORD = "h4p2g6u6";
+static const char* WIFI_SSID = "Tu Taaru Vapar";
+static const char* WIFI_PASSWORD = "veersharma";
 
 static const uint16_t MQTT_PORT = 1883;
 static const char* MQTT_TOPIC = "esp32/telemetry";
 static const char* MQTT_CLIENT_ID = "tranad-esp32-device";
 static const char* SOURCE_ID = "esp32-001";
 static const uint16_t MQTT_BUFFER_SIZE = 4096;
-static const char* MQTT_BROKER_PRIMARY = "192.168.249.187";
+// Use the laptop IPv4 running Mosquitto, not the Wi-Fi gateway address.
+static const char* MQTT_BROKER_PRIMARY = "10.59.244.47";
 static const char* MQTT_BROKER_FALLBACK = "broker.hivemq.com";
 static const uint8_t MQTT_CONNECT_RETRIES_BEFORE_FAILOVER = 5;
+static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // Match backend ingest cadence expectations.
 static const uint32_t PUBLISH_INTERVAL_MS = 500;
@@ -31,12 +33,57 @@ PubSubClient mqttClient(wifiClient);
 uint32_t frameIndex = 0;
 uint64_t seqId = 0;
 uint64_t nextPublishAtMs = 0;
+uint32_t wifiAttemptCount = 0;
 const char* mqttBrokerCandidates[] = {MQTT_BROKER_PRIMARY, MQTT_BROKER_FALLBACK};
 static const uint8_t MQTT_BROKER_COUNT = sizeof(mqttBrokerCandidates) / sizeof(mqttBrokerCandidates[0]);
 uint8_t mqttBrokerIndex = 0;
 // Keep JSON and payload buffers off the loop task stack to avoid runtime instability.
 StaticJsonDocument<MQTT_BUFFER_SIZE> telemetryDoc;
 char telemetryPayload[MQTT_BUFFER_SIZE];
+
+const char* wifiStatusText(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS:
+      return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL:
+      return "WL_NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED:
+      return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED:
+      return "WL_CONNECTED";
+    case WL_CONNECT_FAILED:
+      return "WL_CONNECT_FAILED";
+    case WL_CONNECTION_LOST:
+      return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED:
+      return "WL_DISCONNECTED";
+    default:
+      return "WL_UNKNOWN";
+  }
+}
+
+void dumpNearbyNetworks() {
+  int found = WiFi.scanNetworks(false, true);
+  if (found <= 0) {
+    Serial.println("[ESP32] Scan found no nearby SSIDs");
+    return;
+  }
+
+  Serial.print("[ESP32] Nearby SSIDs: ");
+  Serial.println(found);
+  int limit = found > 8 ? 8 : found;
+  for (int i = 0; i < limit; ++i) {
+    Serial.print("  - ");
+    Serial.print(WiFi.SSID(i));
+    Serial.print(" RSSI=");
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(" dBm ch=");
+    Serial.print(WiFi.channel(i));
+    Serial.print(" enc=");
+    Serial.println((int)WiFi.encryptionType(i));
+  }
+  WiFi.scanDelete();
+}
 
 static inline float replayValue(uint32_t frame, uint32_t ch) {
   int16_t q = (int16_t)pgm_read_word(&(ESP32_REPLAY_DATA[frame][ch]));
@@ -50,19 +97,52 @@ void connectWiFi() {
     return;
   }
 
+  wifiAttemptCount += 1;
+  // Hard-reset the WiFi radio state machine before each join attempt.
+  WiFi.mode(WIFI_OFF);
+  delay(200);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+
+  if (wifiAttemptCount <= 2 || (wifiAttemptCount % 5U) == 0U) {
+    dumpNearbyNetworks();
+  }
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("[ESP32] Connecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  Serial.print("[ESP32] Connecting WiFi SSID=");
+  Serial.println(WIFI_SSID);
+
+  uint32_t startMs = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < WIFI_CONNECT_TIMEOUT_MS) {
     delay(500);
     Serial.print(".");
   }
   Serial.println();
-  Serial.print("[ESP32] WiFi connected. IP=");
-  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("[ESP32] WiFi connected. IP=");
+    Serial.println(WiFi.localIP());
+    return;
+  }
+
+  wl_status_t st = WiFi.status();
+  Serial.print("[ESP32] WiFi connect timeout. status=");
+  Serial.print((int)st);
+  Serial.print(" (");
+  Serial.print(wifiStatusText(st));
+  Serial.println(")");
+  dumpNearbyNetworks();
+  WiFi.disconnect(true, true);
+  delay(300);
 }
 
 void connectMQTT() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
   uint8_t failedAttempts = 0;
   while (!mqttClient.connected()) {
     Serial.print("[ESP32] Connecting MQTT...");
@@ -158,12 +238,20 @@ void setup() {
   connectMQTT();
 
   nextPublishAtMs = (uint64_t)(esp_timer_get_time() / 1000ULL);
-  Serial.println("[ESP32] replay publisher started");
+  if (WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+    Serial.println("[ESP32] replay publisher started");
+  } else {
+    Serial.println("[ESP32] waiting for connectivity before publishing");
+  }
 }
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
+    if (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      return;
+    }
   }
   if (!mqttClient.connected()) {
     connectMQTT();
