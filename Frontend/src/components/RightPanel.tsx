@@ -138,7 +138,7 @@
 
 
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Target, HardDrive, Clock, Shield, Check, AlertTriangle, RefreshCw, Cpu } from 'lucide-react';
 
 const G  = 'var(--gold)'; const CU = 'var(--copper)'; const CR = 'var(--crimson)'; const VI = 'var(--teal)';
@@ -276,6 +276,16 @@ export function GovernancePanel({
 }) {
   const isHealthy = systemState === 'HEALTHY';
   const [isRetraining, setIsRetraining] = useState(false);
+  const retrainResetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (retrainResetTimerRef.current !== null) {
+        window.clearTimeout(retrainResetTimerRef.current);
+        retrainResetTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const handleManualRetrain = async () => {
     if (!onManualRetrain || isRetraining) return;
@@ -284,7 +294,13 @@ export function GovernancePanel({
       await onManualRetrain();
     } finally {
       // Keep spinner for 3 s so the user knows something happened
-      setTimeout(() => setIsRetraining(false), 3000);
+      if (retrainResetTimerRef.current !== null) {
+        window.clearTimeout(retrainResetTimerRef.current);
+      }
+      retrainResetTimerRef.current = window.setTimeout(() => {
+        setIsRetraining(false);
+        retrainResetTimerRef.current = null;
+      }, 3000);
     }
   };
 

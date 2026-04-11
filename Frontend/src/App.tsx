@@ -415,10 +415,13 @@ interface AlertExplanation {
 
 interface DataPoint {
   tick: number; system_loss: number; is_anomalous: boolean; threshold: number;
-  score_components?: { recon: number; forecast: number; corr: number };
-  alert_explanation?: AlertExplanation;
+  actual?: number[];
+  forecast?: number[];
   [key: string]: any;
 }
+
+const UI_UPDATE_INTERVAL_MS = 350;
+const MAX_CHART_POINTS = 30;
 
 const DATASET_TABS = [
   { label: 'SMD',       value: 'SMD'       },
@@ -463,11 +466,18 @@ export default function App() {
   // We keep 110 frames so slice(-100) always yields a full n_window window even
   // if a few frames arrive slightly late or out-of-order.
   const sensorBufferRef = useRef<number[][]>([]);
+  const latestPayloadRef = useRef<any | null>(null);
+  const uiFlushTimerRef = useRef<number | null>(null);
+  const activeDatasetRef = useRef(activeDataset);
 
   // Custom Visual Notifications
   const [anomalyPopup, setAnomalyPopup] = useState<{ show: boolean; msg: string; dataset: string }>({ show: false, msg: '', dataset: '' });
   const hasAlertedRef = useRef(false);
   const anomalyPopupTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    activeDatasetRef.current = activeDataset;
+  }, [activeDataset]);
 
   // ── Poll /api/status every 10 s to pick up model version bumps ───────────
   useEffect(() => {
@@ -572,51 +582,57 @@ export default function App() {
           ws.close();
         }
       };
-      ws.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
+
+      const flushLatestPayload = () => {
+        uiFlushTimerRef.current = null;
+        const payload = latestPayloadRef.current;
+        latestPayloadRef.current = null;
+        if (!payload) return;
 
         if (payload.dimensions) {
           setDimensions(prev => (payload.dimensions !== prev ? payload.dimensions : prev));
         }
 
-        // ── NEW: push an ordered sensor frame into the rolling buffer ────────
-        // payload.sensors is { s0: 0.12, s1: 0.34, ... } from server.py
-        if (payload.sensors && typeof payload.sensors === 'object') {
-          const keys = (Object.keys(payload.sensors) as string[]).sort((a, b) => {
-            const na = parseInt(a.replace(/\D/g, ''), 10) || 0;
-            const nb = parseInt(b.replace(/\D/g, ''), 10) || 0;
-            return na - nb;
-          });
-          const frame = keys.map(k => Number(payload.sensors[k]) || 0);
-          if (frame.length > 0) {
-            sensorBufferRef.current.push(frame);
-            // Keep only the last 110 frames — server uses n_window=100
-            if (sensorBufferRef.current.length > 110) {
-              sensorBufferRef.current.shift();
-            }
+        const dims = Number(payload.dimensions) || 0;
+        const actualArr: number[] = [];
+        const forecastArr: number[] = [];
+        if (dims > 0) {
+          for (let i = 0; i < dims; i += 1) {
+            actualArr.push(Number(payload.sensors?.[`s${i}_actual`]) || 0);
+            forecastArr.push(Number(payload.forecast?.[`s${i}_forecast`]) || 0);
           }
         }
 
         const newPoint: DataPoint = {
-          tick: payload.tick, system_loss: payload.system_loss,
-          is_anomalous: payload.is_anomalous, threshold: payload.threshold,
-          score_components: payload.score_components, alert_explanation: payload.alert_explanation,
-          ...payload.sensors, ...payload.forecast,
+          tick: payload.tick,
+          system_loss: payload.system_loss,
+          is_anomalous: payload.is_anomalous,
+          threshold: payload.threshold,
+          actual: actualArr,
+          forecast: forecastArr,
         };
 
         if (payload.alert_explanation) setAlertExplanation(payload.alert_explanation);
-        if (payload.anomaly_source)    setAnomalySource(payload.anomaly_source);
-        if (payload.score_components)  setScoreComponents(payload.score_components);
+        if (payload.anomaly_source) setAnomalySource(payload.anomaly_source);
+        if (payload.score_components) setScoreComponents(payload.score_components);
 
-        setData(prev => { const n = [...prev, newPoint]; if (n.length > 50) n.shift(); return n; });
+        setData(prev => {
+          if (prev.length >= MAX_CHART_POINTS) {
+            return [...prev.slice(-(MAX_CHART_POINTS - 1)), newPoint];
+          }
+          return [...prev, newPoint];
+        });
 
         if (payload.is_anomalous) {
           setSystemState('CRITICAL');
           if (!hasAlertedRef.current) {
             hasAlertedRef.current = true;
             const type = payload.alert_explanation?.anomaly_type || 'unauthorized_deviation';
-            setAnomalyPopup({ show: true, msg: `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`, dataset: activeDataset });
-            // Auto-dismiss after 4 seconds
+            setAnomalyPopup({
+              show: true,
+              msg: `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`,
+              dataset: activeDatasetRef.current,
+            });
             if (anomalyPopupTimerRef.current !== null) {
               window.clearTimeout(anomalyPopupTimerRef.current);
             }
@@ -632,13 +648,48 @@ export default function App() {
           setAnomalyPopup(prev => ({ ...prev, show: false }));
         }
       };
+
+      const schedulePayloadFlush = () => {
+        if (uiFlushTimerRef.current !== null) return;
+        uiFlushTimerRef.current = window.setTimeout(flushLatestPayload, UI_UPDATE_INTERVAL_MS);
+      };
+
+      ws.onmessage = (event) => {
+        let payload: any;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        // Keep retrain feedback fidelity by buffering every sensor frame received.
+        if (payload.sensors && typeof payload.sensors === 'object') {
+          const keys = (Object.keys(payload.sensors) as string[]).sort((a, b) => {
+            const na = parseInt(a.replace(/\D/g, ''), 10) || 0;
+            const nb = parseInt(b.replace(/\D/g, ''), 10) || 0;
+            return na - nb;
+          });
+          const frame = keys.map(k => Number(payload.sensors[k]) || 0);
+          if (frame.length > 0) {
+            sensorBufferRef.current.push(frame);
+            if (sensorBufferRef.current.length > 110) {
+              sensorBufferRef.current.shift();
+            }
+          }
+        }
+
+        latestPayloadRef.current = payload;
+        schedulePayloadFlush();
+      };
     };
 
     connect();
     return () => {
       stopped = true;
       if (reconnectTimerRef.current !== null) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+      if (uiFlushTimerRef.current !== null) { window.clearTimeout(uiFlushTimerRef.current); uiFlushTimerRef.current = null; }
       if (anomalyPopupTimerRef.current !== null) { window.clearTimeout(anomalyPopupTimerRef.current); anomalyPopupTimerRef.current = null; }
+      latestPayloadRef.current = null;
       if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
       window.removeEventListener('popstate', handlePopState);
     };

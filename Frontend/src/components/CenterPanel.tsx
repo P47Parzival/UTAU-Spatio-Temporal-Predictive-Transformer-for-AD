@@ -70,7 +70,7 @@ export function ResidualSection({ data, dimensions, hotSensors }: { data: any[];
         gap: 6, alignContent: 'start', paddingRight: 4,
       }}>
         {Array.from({ length: dimensions }).map((_, i) => {
-          const isHot = hotSensors.has(`s${i}_actual`);
+          const isHot = hotSensors.has(`s${i}`) || hotSensors.has(`s${i}_actual`);
           return (
             <div key={i} className="panel-recessed" style={{
               height: 80, padding: '6px 8px',
@@ -87,8 +87,8 @@ export function ResidualSection({ data, dimensions, hotSensors }: { data: any[];
                   <LineChart data={data}>
                     <YAxis yAxisId="a" hide domain={['auto', 'auto']} />
                     <YAxis yAxisId="f" hide domain={['auto', 'auto']} />
-                    <Line yAxisId="a" type="stepAfter" dataKey={`s${i}_actual`}   stroke={isHot ? CR : G}  strokeWidth={1}   dot={false} isAnimationActive={false} />
-                    <Line yAxisId="f" type="monotone"  dataKey={`s${i}_forecast`} stroke={GR}             strokeWidth={1}   dot={false} isAnimationActive={false} strokeDasharray="2 2" />
+                    <Line yAxisId="a" type="stepAfter" dataKey={(d: any) => d?.actual?.[i]}   stroke={isHot ? CR : G}  strokeWidth={1}   dot={false} isAnimationActive={false} />
+                    <Line yAxisId="f" type="monotone"  dataKey={(d: any) => d?.forecast?.[i]} stroke={GR}             strokeWidth={1}   dot={false} isAnimationActive={false} strokeDasharray="2 2" />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
