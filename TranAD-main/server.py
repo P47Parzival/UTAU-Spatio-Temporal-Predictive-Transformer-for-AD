@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from collections import deque
 import os
 from dotenv import load_dotenv
+from src.online_finetuner import run_finetune, FT_LR
 
 _SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 _WORKSPACE_ROOT = os.path.dirname(_SERVER_DIR)
@@ -65,6 +66,7 @@ MODEL_NAME = 'STP_TranAD'
 DATASET = 'SMD'
 model = None
 optimizer = None
+ft_optimizer = None  # Separate low-LR optimizer for feedback-driven fine-tuning
 # Keep one extra frame so we can forecast current from previous model.n_window points.
 live_buffer = deque(maxlen=101)
 data_condition = asyncio.Condition()
@@ -313,6 +315,7 @@ class FeedbackPayload(BaseModel):
     calibrate_requested: bool = False
     system_loss: Optional[float] = None
     threshold: Optional[float] = None
+    raw_window: Optional[list] = None  # (n_window x n_feats) flattened — stored as BLOB for fine-tuning
 
 class RetrainAppliedPayload(BaseModel):
     model_version: Optional[str] = None
@@ -1271,10 +1274,17 @@ def _init_feedback_db():
                 note TEXT,
                 calibrate_requested INTEGER NOT NULL DEFAULT 0,
                 system_loss REAL,
-                threshold REAL
+                threshold REAL,
+                raw_window BLOB
             )
             """
         )
+        # ── Migration: add raw_window column to existing DBs ──────────────
+        try:
+            conn.execute("ALTER TABLE operator_feedback ADD COLUMN raw_window BLOB")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_operator_feedback_created_at ON operator_feedback(created_at_ms)"
         )
@@ -1307,9 +1317,9 @@ def _save_feedback_row(record: dict) -> int:
             INSERT INTO operator_feedback (
                 created_at_ms, dataset, tick, was_anomaly, severity_level,
                 confidence, anomaly_type, note, calibrate_requested,
-                system_loss, threshold
+                system_loss, threshold, raw_window
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record["created_at_ms"],
@@ -1323,6 +1333,7 @@ def _save_feedback_row(record: dict) -> int:
                 1 if record["calibrate_requested"] else 0,
                 record["system_loss"],
                 record["threshold"],
+                record.get("raw_window"),  # BLOB or None
             ),
         )
         conn.commit()
@@ -1502,6 +1513,56 @@ def _refresh_retrain_recommendation(force: bool = False):
                 "previous_reason": prev_reason,
             },
         )
+
+
+async def _finetune_async_wrapper():
+    """Async wrapper — syncs model_registry version key after fine-tune completes."""
+    if model is None or ft_optimizer is None:
+        return
+    _ft_ckpt_dir = os.path.join(
+        _SERVER_DIR, "checkpoints", f"STP_TranAD_{_runtime_dataset_alias(DATASET)}"
+    )
+    version_ref = {"version": str(model_registry.get("model_version", "default"))}
+    try:
+        result = await run_finetune(
+            model=model,
+            optimizer=ft_optimizer,
+            db_path=FEEDBACK_DB_PATH,
+            checkpoint_dir=_ft_ckpt_dir,
+            device=device,
+            model_version_ref=version_ref,
+            retrain_state=retrain_state,
+            model_lock=model_lock,
+        )
+        if not result.get("skipped"):
+            model_registry["model_version"] = version_ref["version"]
+            _enqueue_influx(
+                "finetune_events",
+                {"dataset": DATASET, "model_version": model_registry["model_version"]},
+                {
+                    "windows_used": int(result.get("windows_used", 0)),
+                    "epochs": int(result.get("epochs", 0)),
+                    "new_version": str(result.get("new_version", "")),
+                },
+            )
+            print(f"[FINETUNE] Complete → version={model_registry['model_version']}  result={result}")
+        else:
+            print(f"[FINETUNE] Skipped: {result.get('reason')} (windows={result.get('count')})")
+    except Exception as exc:
+        print(f"[FINETUNE] Error during fine-tune: {exc}")
+
+
+def _launch_finetune_task():
+    """Fire-and-forget fine-tune — safe to call from any async FastAPI context."""
+    if model is None or ft_optimizer is None:
+        print("[FINETUNE] Skipped — model or ft_optimizer not ready.")
+        return
+    try:
+        asyncio.create_task(_finetune_async_wrapper())
+        print("[FINETUNE] Background fine-tune task queued.")
+    except RuntimeError as exc:
+        print(f"[FINETUNE] Could not schedule task (event loop issue): {exc}")
+
 
 def _update_drift_state():
     global drift_state
@@ -2214,6 +2275,8 @@ def init_model(target_ds=None):
     # Initialize Model fundamentally equivalent to Training initialization
     m = STP_TranAD(feats).double().to(device)
     opt = torch.optim.AdamW(m.parameters(), lr=1e-5, weight_decay=1e-5)
+    global ft_optimizer
+    ft_optimizer = torch.optim.Adam(m.parameters(), lr=FT_LR, weight_decay=1e-5)
     
     if os.path.exists(ckpt_path):
         try:
@@ -2813,6 +2876,7 @@ async def trigger_dataset_swap(req: SwapRequest):
         DATASET = req.dataset
         model = new_model
         optimizer = new_optimizer
+        ft_optimizer = torch.optim.Adam(new_model.parameters(), lr=FT_LR, weight_decay=1e-5)
         feats_dim = new_feats
         _reset_ingestion_state(feats_dim)
         
@@ -2958,11 +3022,35 @@ async def submit_operator_feedback(payload: FeedbackPayload):
         "threshold": payload.threshold,
     }
 
+    # ── Capture raw window snapshot for fine-tuning ──────────────────────────
+    raw_window_blob: Optional[bytes] = None
+    if payload.raw_window is not None:
+        try:
+            raw_arr = np.array(payload.raw_window, dtype=np.float32)
+            raw_window_blob = raw_arr.tobytes()
+        except Exception:
+            raw_window_blob = None
+    elif model is not None and len(live_buffer) >= model.n_window:
+        try:
+            window_snap = list(live_buffer)[-model.n_window:]
+            raw_arr = np.array(window_snap, dtype=np.float32)
+            raw_window_blob = raw_arr.tobytes()
+        except Exception:
+            raw_window_blob = None
+    record["raw_window"] = raw_window_blob
+
+    # ── FIXED: snapshot BEFORE refresh so we detect the flip correctly ────────
+    was_recommended_before = bool(retrain_state.get("recommended", False))
+
     async with feedback_db_lock:
         row_id = await asyncio.to_thread(_save_feedback_row, record)
         latest_counts = await asyncio.to_thread(_load_feedback_counters)
     feedback_counters.update(latest_counts)
     _refresh_retrain_recommendation(force=False)
+
+    # ── Fire adaptive fine-tune if recommendation just became active ──────────
+    if retrain_state.get("recommended") and not was_recommended_before:
+        _launch_finetune_task()
 
     _enqueue_influx(
         "operator_feedback",
@@ -2988,6 +3076,38 @@ async def submit_operator_feedback(payload: FeedbackPayload):
         "id": row_id,
         "feedback": feedback_counters,
         "retraining": retrain_state,
+    }
+
+
+@app.post("/api/retrain")
+async def trigger_manual_retrain(note: Optional[str] = None):
+    """
+    Manually trigger a fine-tuning cycle from the dashboard or operator CLI.
+    Does NOT require the retrain_state recommendation flag to be set.
+    Returns immediately; fine-tuning runs in the background.
+    """
+    if model is None:
+        raise HTTPException(status_code=503, detail="model_not_loaded")
+    if ft_optimizer is None:
+        raise HTTPException(status_code=503, detail="ft_optimizer_not_initialized")
+
+    _launch_finetune_task()
+
+    _emit_policy_event(
+        "manual_retrain",
+        "triggered",
+        note or "operator-initiated manual fine-tune",
+        {
+            "model_version": str(model_registry.get("model_version", "default")),
+            "feedback_total": int(feedback_counters.get("total", 0)),
+        },
+    )
+
+    return {
+        "status": "finetune_started",
+        "current_version": model_registry.get("model_version", "default"),
+        "note": note,
+        "feedback_totals": feedback_counters,
     }
 
 @app.get("/feedback/summary")
