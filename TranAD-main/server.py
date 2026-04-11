@@ -88,7 +88,7 @@ CALIBRATE_TOL = float(os.getenv("CALIBRATE_TOL", "1e-4"))
 CALIBRATE_MAX_SAMPLES = int(os.getenv("CALIBRATE_MAX_SAMPLES", "48"))
 
 # Kafka streaming controls
-KAFKA_CONSUMER_ENABLED = _env_flag("KAFKA_CONSUMER_ENABLED")
+KAFKA_CONSUMER_ENABLED = _env_flag("KAFKA_CONSUMER_ENABLED", "true")
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:29092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "telemetry-stream")
 KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "stp-tranad-consumer")
@@ -108,7 +108,9 @@ INFLUX_DEADLETTER_PATH = os.getenv("INFLUX_DEADLETTER_PATH", os.path.join("resul
 
 # Phase 1 rollout flags
 FEATURE_ANOMALY_SOURCE_TAB = _env_flag("FEATURE_ANOMALY_SOURCE_TAB", "true")
+FEATURE_DATA_SOURCE_TAB = _env_flag("FEATURE_DATA_SOURCE_TAB", "true")
 FEATURE_RL_POLICY_SUGGESTIONS = _env_flag("FEATURE_RL_POLICY_SUGGESTIONS")
+SOURCE_REGISTRY_PATH = os.getenv("SOURCE_REGISTRY_PATH", os.path.join(_SERVER_DIR, "results", "data_sources.json"))
 
 # Phase 8 RL suggestion-only controls
 RL_POLICY_STATE_PATH = os.getenv("RL_POLICY_STATE_PATH", os.path.join("results", "rl_policy_state.json"))
@@ -247,6 +249,17 @@ influx_state = {
     "last_error": "",
 }
 
+source_registry_lock = asyncio.Lock()
+source_registry = {
+    "items": [],
+    "next_id": 1,
+    "updated_at_ms": int(time.time() * 1000),
+}
+source_runtime = {
+    "active_source_id": None,
+    "last_health_check_ms": 0,
+}
+
 class TelemetryData(BaseModel):
     timestamp_ms: int
     sensors: list[float]
@@ -284,6 +297,35 @@ class RLRollbackPayload(BaseModel):
     apply_id: Optional[str] = None
     note: Optional[str] = None
 
+class SourceCreatePayload(BaseModel):
+    name: str
+    protocol: str
+    endpoint: str
+    topic: Optional[str] = None
+    dataset: Optional[str] = None
+    expected_dimensions: Optional[int] = None
+    enabled: bool = True
+    is_active: bool = False
+    notes: Optional[str] = None
+    mapping: dict[str, Any] = {}
+    auth: Optional[dict[str, Any]] = None
+
+class SourceUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    protocol: Optional[str] = None
+    endpoint: Optional[str] = None
+    topic: Optional[str] = None
+    dataset: Optional[str] = None
+    expected_dimensions: Optional[int] = None
+    enabled: Optional[bool] = None
+    is_active: Optional[bool] = None
+    notes: Optional[str] = None
+    mapping: Optional[dict[str, Any]] = None
+    auth: Optional[dict[str, Any]] = None
+
+class SourceMappingValidatePayload(BaseModel):
+    sample: Optional[dict[str, Any]] = None
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -296,6 +338,11 @@ def _safe_float(value):
         return f
     return None
 
+def _model_dump(payload: BaseModel, **kwargs) -> dict[str, Any]:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(**kwargs)
+    return payload.dict(**kwargs)
+
 def _append_influx_deadletter(batch: list[dict], reason: str):
     path = Path(INFLUX_DEADLETTER_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,6 +354,348 @@ def _append_influx_deadletter(batch: list[dict], reason: str):
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload) + "\n")
+
+_SOURCE_PROTOCOLS = {"kafka", "mqtt", "opcua", "http"}
+_SOURCE_DATASETS = {"SMD", "MSL", "SMAP", "synthetic"}
+_SOURCE_SECRET_KEYS = ("token", "password", "secret", "key")
+
+def _mask_secret(value: Any) -> str:
+    s = str(value)
+    if len(s) <= 4:
+        return "****"
+    return ("*" * max(4, len(s) - 4)) + s[-4:]
+
+def _sanitize_auth(auth: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(auth, dict):
+        return {}
+    sanitized = {}
+    for k, v in auth.items():
+        if v is None:
+            continue
+        key_l = str(k).lower()
+        if isinstance(v, str):
+            value = v.strip()
+            if value == "":
+                continue
+        else:
+            value = v
+        sanitized[str(k)] = value
+    return sanitized
+
+def _public_source_item(item: dict[str, Any]) -> dict[str, Any]:
+    out = dict(item)
+    auth = out.get("auth")
+    if isinstance(auth, dict):
+        masked = {}
+        for k, v in auth.items():
+            key_l = str(k).lower()
+            if any(secret_key in key_l for secret_key in _SOURCE_SECRET_KEYS):
+                masked[str(k)] = _mask_secret(v)
+            else:
+                masked[str(k)] = v
+        out["auth"] = masked
+    else:
+        out["auth"] = {}
+    return out
+
+def _normalize_dataset_name(dataset: Optional[str]) -> Optional[str]:
+    if dataset is None:
+        return None
+    text = str(dataset).strip()
+    if text == "":
+        return None
+    if text.lower() == "synthetic":
+        return "synthetic"
+    up = text.upper()
+    return up
+
+def _validate_source_payload(raw: dict[str, Any], partial: bool) -> tuple[dict[str, Any], list[str]]:
+    normalized = {}
+    errors = []
+
+    if (not partial) or ("name" in raw):
+        name = str(raw.get("name", "")).strip()
+        if not name:
+            errors.append("name is required")
+        else:
+            normalized["name"] = name[:96]
+
+    if (not partial) or ("protocol" in raw):
+        protocol = str(raw.get("protocol", "")).strip().lower()
+        if protocol not in _SOURCE_PROTOCOLS:
+            errors.append(f"protocol must be one of: {', '.join(sorted(_SOURCE_PROTOCOLS))}")
+        else:
+            normalized["protocol"] = protocol
+
+    if (not partial) or ("endpoint" in raw):
+        endpoint = str(raw.get("endpoint", "")).strip()
+        if not endpoint:
+            errors.append("endpoint is required")
+        else:
+            normalized["endpoint"] = endpoint[:512]
+
+    if "topic" in raw:
+        topic_raw = raw.get("topic")
+        topic = None if topic_raw is None else str(topic_raw).strip()
+        normalized["topic"] = topic[:128] if topic else None
+    elif not partial:
+        normalized["topic"] = None
+
+    if "dataset" in raw:
+        dataset = _normalize_dataset_name(raw.get("dataset"))
+        if dataset is not None and dataset not in _SOURCE_DATASETS:
+            errors.append("dataset must be one of SMD, MSL, SMAP, synthetic")
+        else:
+            normalized["dataset"] = dataset
+    elif not partial:
+        normalized["dataset"] = None
+
+    if "expected_dimensions" in raw:
+        expected_raw = raw.get("expected_dimensions")
+        if expected_raw is None or expected_raw == "":
+            normalized["expected_dimensions"] = None
+        else:
+            try:
+                expected = int(expected_raw)
+                if expected <= 0:
+                    raise ValueError()
+                normalized["expected_dimensions"] = expected
+            except Exception:
+                errors.append("expected_dimensions must be a positive integer")
+    elif not partial:
+        normalized["expected_dimensions"] = None
+
+    if (not partial) or ("enabled" in raw):
+        normalized["enabled"] = bool(raw.get("enabled", True))
+
+    if "is_active" in raw:
+        normalized["is_active"] = bool(raw.get("is_active", False))
+    elif not partial:
+        normalized["is_active"] = False
+
+    if "notes" in raw:
+        note_raw = raw.get("notes")
+        note = None if note_raw is None else str(note_raw).strip()
+        normalized["notes"] = note[:512] if note else None
+    elif not partial:
+        normalized["notes"] = None
+
+    if "mapping" in raw:
+        mapping = raw.get("mapping")
+        if mapping is None:
+            normalized["mapping"] = {}
+        elif isinstance(mapping, dict):
+            normalized["mapping"] = mapping
+        else:
+            errors.append("mapping must be an object")
+    elif not partial:
+        normalized["mapping"] = {}
+
+    if "auth" in raw:
+        auth = raw.get("auth")
+        if auth is None:
+            normalized["auth"] = {}
+        elif isinstance(auth, dict):
+            normalized["auth"] = _sanitize_auth(auth)
+        else:
+            errors.append("auth must be an object")
+    elif not partial:
+        normalized["auth"] = {}
+
+    return normalized, errors
+
+def _save_source_registry() -> None:
+    path = Path(SOURCE_REGISTRY_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "items": source_registry.get("items", []),
+        "next_id": int(source_registry.get("next_id", 1)),
+        "updated_at_ms": int(source_registry.get("updated_at_ms", _now_ms())),
+    }
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+def _load_source_registry() -> None:
+    path = Path(SOURCE_REGISTRY_PATH)
+    if not path.exists():
+        source_registry["items"] = []
+        source_registry["next_id"] = 1
+        source_registry["updated_at_ms"] = _now_ms()
+        source_runtime["active_source_id"] = None
+        return
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        print(f"WARNING: Failed to load source registry ({SOURCE_REGISTRY_PATH}): {exc}")
+        source_registry["items"] = []
+        source_registry["next_id"] = 1
+        source_registry["updated_at_ms"] = _now_ms()
+        source_runtime["active_source_id"] = None
+        return
+
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        items = []
+
+    normalized_items = []
+    max_id = 0
+    active_source_id = None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source_id = int(item.get("id", 0))
+        if source_id <= 0:
+            continue
+        max_id = max(max_id, source_id)
+        entry = {
+            "id": source_id,
+            "name": str(item.get("name", f"source-{source_id}")),
+            "protocol": str(item.get("protocol", "kafka")).lower(),
+            "endpoint": str(item.get("endpoint", "")),
+            "topic": item.get("topic"),
+            "dataset": _normalize_dataset_name(item.get("dataset")),
+            "expected_dimensions": item.get("expected_dimensions"),
+            "enabled": bool(item.get("enabled", True)),
+            "is_active": bool(item.get("is_active", False)),
+            "notes": item.get("notes"),
+            "mapping": item.get("mapping") if isinstance(item.get("mapping"), dict) else {},
+            "auth": _sanitize_auth(item.get("auth") if isinstance(item.get("auth"), dict) else {}),
+            "created_at_ms": int(item.get("created_at_ms", _now_ms())),
+            "updated_at_ms": int(item.get("updated_at_ms", _now_ms())),
+        }
+        if entry["is_active"] and active_source_id is None:
+            active_source_id = source_id
+        normalized_items.append(entry)
+
+    if active_source_id is None and normalized_items:
+        normalized_items[0]["is_active"] = True
+        active_source_id = int(normalized_items[0]["id"])
+
+    for entry in normalized_items:
+        entry["is_active"] = int(entry["id"]) == int(active_source_id) if active_source_id is not None else False
+
+    source_registry["items"] = normalized_items
+    source_registry["next_id"] = max(int(payload.get("next_id", max_id + 1)), max_id + 1)
+    source_registry["updated_at_ms"] = int(payload.get("updated_at_ms", _now_ms()))
+    source_runtime["active_source_id"] = active_source_id
+
+def _set_active_source(source_id: int) -> None:
+    active_id = None
+    for item in source_registry["items"]:
+        is_active = int(item.get("id", -1)) == int(source_id)
+        item["is_active"] = is_active
+        if is_active:
+            active_id = int(item["id"])
+    source_runtime["active_source_id"] = active_id
+
+def _find_source_by_id(source_id: int) -> Optional[dict[str, Any]]:
+    for item in source_registry["items"]:
+        if int(item.get("id", -1)) == int(source_id):
+            return item
+    return None
+
+def _extract_nested_path(sample: dict[str, Any], path: str) -> Any:
+    if not path:
+        return None
+    current: Any = sample
+    for part in path.split('.'):
+        key = part.strip()
+        if not key:
+            return None
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+            continue
+        return None
+    return current
+
+def _source_health_snapshot(source: dict[str, Any]) -> dict[str, Any]:
+    now = _now_ms()
+    source_runtime["last_health_check_ms"] = now
+    protocol = str(source.get("protocol", "kafka"))
+    enabled = bool(source.get("enabled", True))
+    dataset = source.get("dataset")
+    dataset_matches = (dataset is None) or (dataset == DATASET)
+    last_message_ts = kafka_state.get("last_message_ts_ms")
+    message_age_ms = None
+    if isinstance(last_message_ts, int):
+        message_age_ms = max(0, now - int(last_message_ts))
+
+    drop_total = int(ingest_stats.get("dropped_dimension_mismatch", 0) + ingest_stats.get("dropped_invalid_timestamp", 0))
+    total = int(ingest_stats.get("total", 0))
+    drop_ratio = float(drop_total / max(1, total))
+
+    status = "offline"
+    reason = "source_disabled"
+    if enabled:
+        if not dataset_matches:
+            status = "idle"
+            reason = "dataset_not_active"
+        elif protocol == "kafka":
+            if not kafka_state.get("connected", False):
+                status = "offline"
+                reason = "kafka_not_connected"
+            elif message_age_ms is not None and message_age_ms > 15000:
+                status = "degraded"
+                reason = "stale_kafka_messages"
+            elif drop_ratio >= 0.30:
+                status = "degraded"
+                reason = "high_drop_ratio"
+            elif total <= 0:
+                status = "waiting"
+                reason = "awaiting_ingest"
+            else:
+                status = "healthy"
+                reason = "streaming"
+        else:
+            if total <= 0:
+                status = "waiting"
+                reason = "awaiting_ingest"
+            elif drop_ratio >= 0.30:
+                status = "degraded"
+                reason = "high_drop_ratio"
+            else:
+                status = "healthy"
+                reason = "ingesting"
+
+    return {
+        "source_id": int(source.get("id", -1)),
+        "source_name": source.get("name", ""),
+        "protocol": protocol,
+        "enabled": enabled,
+        "dataset": dataset,
+        "dataset_active": dataset_matches,
+        "status": status,
+        "reason": reason,
+        "checked_at_ms": now,
+        "kafka_connected": bool(kafka_state.get("connected", False)),
+        "last_message_ts_ms": last_message_ts,
+        "message_age_ms": message_age_ms,
+        "ingest_total": total,
+        "ingest_drop_ratio": drop_ratio,
+        "ingest_dropped_dimension_mismatch": int(ingest_stats.get("dropped_dimension_mismatch", 0)),
+        "ingest_dropped_invalid_timestamp": int(ingest_stats.get("dropped_invalid_timestamp", 0)),
+    }
+
+def _source_registry_summary() -> dict[str, Any]:
+    items = source_registry.get("items", [])
+    active = None
+    for item in items:
+        if item.get("is_active", False):
+            active = item
+            break
+
+    return {
+        "enabled": FEATURE_DATA_SOURCE_TAB,
+        "path": SOURCE_REGISTRY_PATH,
+        "total": len(items),
+        "enabled_count": sum(1 for item in items if item.get("enabled", False)),
+        "active_source_id": None if active is None else int(active.get("id", -1)),
+        "active_source_name": None if active is None else str(active.get("name", "")),
+        "last_updated_ms": int(source_registry.get("updated_at_ms", 0)),
+        "last_health_check_ms": int(source_runtime.get("last_health_check_ms", 0)),
+    }
 
 def _influx_record(measurement: str, tags: dict, fields: dict, timestamp_ms: Optional[int] = None):
     if Point is None or WritePrecision is None:
@@ -1468,6 +1857,7 @@ async def _kafka_consumer_loop():
 async def startup_event():
     global model, optimizer, feats_dim, governance_task, kafka_consumer_task, influx_writer_task, influx_queue, rl_policy_manager
     _init_feedback_db()
+    _load_source_registry()
     feedback_counters.update(_load_feedback_counters())
     model, optimizer, feats_dim = init_model()
     _reset_ingestion_state(feats_dim)
@@ -1564,8 +1954,10 @@ async def get_status():
         },
         "features": {
             "anomaly_source_tab": FEATURE_ANOMALY_SOURCE_TAB,
+            "data_source_tab": FEATURE_DATA_SOURCE_TAB,
             "rl_policy_suggestions": FEATURE_RL_POLICY_SUGGESTIONS,
         },
+        "sources": _source_registry_summary(),
         "rl_policy": {
             "enabled": FEATURE_RL_POLICY_SUGGESTIONS,
             "manager_ready": rl_policy_manager is not None,
@@ -1578,6 +1970,181 @@ async def get_status():
         },
         "kafka": kafka_state,
         "influx": influx_state,
+    }
+
+@app.get("/sources")
+async def list_sources():
+    async with source_registry_lock:
+        items = [_public_source_item(item) for item in source_registry["items"]]
+        active_source_id = source_runtime.get("active_source_id")
+    return {
+        "total": len(items),
+        "active_source_id": active_source_id,
+        "items": items,
+    }
+
+@app.post("/sources")
+async def create_source(payload: SourceCreatePayload):
+    body = _model_dump(payload)
+    normalized, errors = _validate_source_payload(body, partial=False)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    async with source_registry_lock:
+        source_id = int(source_registry["next_id"])
+        now_ms = _now_ms()
+        entry = {
+            "id": source_id,
+            "name": normalized["name"],
+            "protocol": normalized["protocol"],
+            "endpoint": normalized["endpoint"],
+            "topic": normalized.get("topic"),
+            "dataset": normalized.get("dataset"),
+            "expected_dimensions": normalized.get("expected_dimensions"),
+            "enabled": bool(normalized.get("enabled", True)),
+            "is_active": False,
+            "notes": normalized.get("notes"),
+            "mapping": normalized.get("mapping", {}),
+            "auth": normalized.get("auth", {}),
+            "created_at_ms": now_ms,
+            "updated_at_ms": now_ms,
+        }
+        source_registry["items"].append(entry)
+        source_registry["next_id"] = source_id + 1
+        source_registry["updated_at_ms"] = now_ms
+
+        requested_active = bool(normalized.get("is_active", False))
+        has_active = any(item.get("is_active", False) for item in source_registry["items"])
+        if requested_active or (not has_active):
+            _set_active_source(source_id)
+
+        _save_source_registry()
+        created = _public_source_item(entry)
+
+    return {
+        "status": "created",
+        "item": created,
+        "active_source_id": source_runtime.get("active_source_id"),
+    }
+
+@app.patch("/sources/{source_id}")
+async def update_source(source_id: int, payload: SourceUpdatePayload):
+    body = _model_dump(payload, exclude_unset=True)
+    if not body:
+        raise HTTPException(status_code=400, detail="empty_patch_payload")
+
+    normalized, errors = _validate_source_payload(body, partial=True)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    async with source_registry_lock:
+        entry = _find_source_by_id(source_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="source_not_found")
+
+        for key, value in normalized.items():
+            if key == "is_active":
+                continue
+            entry[key] = value
+        entry["updated_at_ms"] = _now_ms()
+        source_registry["updated_at_ms"] = entry["updated_at_ms"]
+
+        if "is_active" in normalized:
+            if normalized["is_active"]:
+                _set_active_source(source_id)
+            else:
+                entry["is_active"] = False
+                if source_runtime.get("active_source_id") == source_id:
+                    source_runtime["active_source_id"] = None
+                    for candidate in source_registry["items"]:
+                        if candidate.get("enabled", False):
+                            _set_active_source(int(candidate["id"]))
+                            break
+
+        _save_source_registry()
+        updated = _public_source_item(entry)
+
+    return {
+        "status": "updated",
+        "item": updated,
+        "active_source_id": source_runtime.get("active_source_id"),
+    }
+
+@app.get("/sources/{source_id}/health")
+async def source_health(source_id: int):
+    async with source_registry_lock:
+        entry = _find_source_by_id(source_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="source_not_found")
+        health = _source_health_snapshot(entry)
+    return health
+
+@app.post("/sources/{source_id}/mapping/validate")
+async def validate_source_mapping(source_id: int, payload: SourceMappingValidatePayload):
+    async with source_registry_lock:
+        entry = _find_source_by_id(source_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="source_not_found")
+        mapping = entry.get("mapping") if isinstance(entry.get("mapping"), dict) else {}
+        expected_dims = entry.get("expected_dimensions")
+
+    timestamp_path = str(mapping.get("timestamp_path", "timestamp_ms")).strip()
+    vector_path = str(mapping.get("vector_path", "sensors")).strip()
+    issues = []
+    warnings = []
+
+    if not timestamp_path:
+        issues.append("mapping.timestamp_path is required")
+    if not vector_path:
+        issues.append("mapping.vector_path is required")
+
+    sample_result = {
+        "checked": False,
+        "timestamp_ok": False,
+        "vector_ok": False,
+        "vector_length": None,
+    }
+
+    if payload.sample is not None:
+        sample_result["checked"] = True
+        sample = payload.sample
+        ts_value = _extract_nested_path(sample, timestamp_path)
+        vec_value = _extract_nested_path(sample, vector_path)
+
+        if not isinstance(ts_value, int):
+            issues.append(f"timestamp_path '{timestamp_path}' did not resolve to integer timestamp")
+        else:
+            sample_result["timestamp_ok"] = True
+
+        if not isinstance(vec_value, list):
+            issues.append(f"vector_path '{vector_path}' did not resolve to numeric array")
+        else:
+            sample_result["vector_ok"] = True
+            sample_result["vector_length"] = len(vec_value)
+            if any(_safe_float(v) is None for v in vec_value):
+                issues.append("sample vector contains non-numeric values")
+            if expected_dims is not None and len(vec_value) != int(expected_dims):
+                issues.append(
+                    f"sample vector length {len(vec_value)} does not match expected_dimensions {int(expected_dims)}"
+                )
+            if len(vec_value) != feats_dim:
+                warnings.append(f"sample vector length {len(vec_value)} differs from active model dimensions {feats_dim}")
+
+    if expected_dims is None:
+        warnings.append("expected_dimensions is not set; dimension mismatch protection may be weaker")
+
+    return {
+        "source_id": source_id,
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "warnings": warnings,
+        "resolved_mapping": {
+            "timestamp_path": timestamp_path,
+            "vector_path": vector_path,
+            "expected_dimensions": expected_dims,
+            "active_model_dimensions": feats_dim,
+        },
+        "sample_check": sample_result,
     }
 
 @app.get("/anomalies")

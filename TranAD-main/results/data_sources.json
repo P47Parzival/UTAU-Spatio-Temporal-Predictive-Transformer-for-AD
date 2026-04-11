@@ -1,0 +1,44 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "name": "Test sensor2",
+      "protocol": "kafka",
+      "endpoint": "127.0.0.1:29092",
+      "topic": "telemetry-stream",
+      "dataset": "synthetic",
+      "expected_dimensions": 39,
+      "enabled": true,
+      "is_active": true,
+      "notes": null,
+      "mapping": {
+        "timestamp_path": "timestamp_ms",
+        "vector_path": "sensors"
+      },
+      "auth": {},
+      "created_at_ms": 1775868056907,
+      "updated_at_ms": 1775869210385
+    },
+    {
+      "id": 2,
+      "name": "Test sensor2",
+      "protocol": "kafka",
+      "endpoint": "127.0.0.1:29092",
+      "topic": "telemetry-stream",
+      "dataset": "synthetic",
+      "expected_dimensions": 39,
+      "enabled": true,
+      "is_active": false,
+      "notes": null,
+      "mapping": {
+        "timestamp_path": "timestamp_ms",
+        "vector_path": "sensors"
+      },
+      "auth": {},
+      "created_at_ms": 1775869210884,
+      "updated_at_ms": 1775869211183
+    }
+  ],
+  "next_id": 3,
+  "updated_at_ms": 1775869211183
+}

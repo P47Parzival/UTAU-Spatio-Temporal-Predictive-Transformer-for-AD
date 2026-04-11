@@ -4,12 +4,13 @@ import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
 import { IncidentReport, RootCausePanel, SimilarIncidents, GovernancePanel } from './components/RightPanel';
 import AnomalySourceTab from './components/AnomalySourceTab';
+import DataSourceTab from './components/DataSourceTab';
 import LandingPage from './LandingPage';
 import AIChatPage from './AIChatPage';
 
 interface AlertExplanation {
   severity_score: number;
-  severity_level: string;
+  severity_level: 'info' | 'warning' | 'critical';
   confidence: number;
   anomaly_type: string;
   duration_steps: number;
@@ -39,6 +40,7 @@ const featureFlag = (value: unknown, defaultValue = false): boolean => {
 
 export default function App() {
   const isAnomalySourceTabEnabled = featureFlag(import.meta.env.VITE_FEATURE_ANOMALY_SOURCE_TAB, true);
+  const isDataSourceTabEnabled = featureFlag(import.meta.env.VITE_FEATURE_DATA_SOURCE_TAB, true);
   const isRlPolicySuggestionsEnabled = featureFlag(import.meta.env.VITE_FEATURE_RL_POLICY_SUGGESTIONS);
 
   const [data,                  setData]                  = useState<DataPoint[]>([]);
@@ -52,7 +54,7 @@ export default function App() {
   const [scoreComponents,       setScoreComponents]       = useState<{ recon: number; forecast: number; corr: number } | null>(null);
   const [feedbackStatus,        setFeedbackStatus]        = useState('');
   const [isSubmittingFeedback,  setIsSubmittingFeedback]  = useState(false);
-  const [activeFeatureTab,      setActiveFeatureTab]      = useState<'live' | 'anomaly-source'>('live');
+  const [activeFeatureTab,      setActiveFeatureTab]      = useState<'live' | 'anomaly-source' | 'data-source'>('live');
   const [currentPath,           setCurrentPath]           = useState(() => window.location.pathname === '/dashboard' ? '/dashboard' : '/landing');
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -205,6 +207,7 @@ export default function App() {
           state={systemState} isConnected={isConnected && !isTransitioning}
           tabs={DATASET_TABS} activeDataset={activeDataset} isTransitioning={isTransitioning}
           onChangeDataset={changeDataset} isAnomalySourceTabEnabled={isAnomalySourceTabEnabled}
+          isDataSourceTabEnabled={isDataSourceTabEnabled}
           isRlPolicySuggestionsEnabled={isRlPolicySuggestionsEnabled}
           activeFeatureTab={activeFeatureTab} onFeatureTabChange={setActiveFeatureTab}
           onNavigateHome={() => navigateTo('/landing')}
@@ -216,6 +219,10 @@ export default function App() {
       {activeFeatureTab === 'anomaly-source' ? (
         <div className="panel" style={{ margin: 12, overflow: 'auto', padding: 18, flex: 1, minHeight: 0 }}>
           <AnomalySourceTab activeDataset={activeDataset} alertExplanation={alertExplanation} anomalySource={anomalySource} scoreComponents={scoreComponents} isConnected={isConnected} />
+        </div>
+      ) : activeFeatureTab === 'data-source' ? (
+        <div className="panel" style={{ margin: 12, overflow: 'auto', padding: 18, flex: 1, minHeight: 0 }}>
+          <DataSourceTab />
         </div>
       ) : (
         /* Standard 3-Column Dashboard */

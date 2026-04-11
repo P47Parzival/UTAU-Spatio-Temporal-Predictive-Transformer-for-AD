@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import socket
 import time
 from typing import Optional
 from urllib import error as urlerror
@@ -22,7 +23,7 @@ def fetch_active_dataset(status_url: str, timeout_sec: float) -> Optional[str]:
     try:
         with urlrequest.urlopen(status_url, timeout=float(timeout_sec)) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urlerror.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+    except (urlerror.URLError, socket.timeout, TimeoutError, OSError, json.JSONDecodeError, ValueError):
         return None
 
     dataset = payload.get("active_dataset")
@@ -66,6 +67,11 @@ async def stream_data(args: argparse.Namespace) -> None:
         active_dataset = await asyncio.to_thread(fetch_active_dataset, args.status_url, args.status_timeout_sec)
         if active_dataset:
             current_dataset = active_dataset
+        else:
+            print(
+                f"[PRODUCER] Status endpoint unreachable ({args.status_url}); "
+                f"continuing with dataset={current_dataset}"
+            )
 
     data = load_dataset_array(current_dataset, args.file)
     total = len(data)

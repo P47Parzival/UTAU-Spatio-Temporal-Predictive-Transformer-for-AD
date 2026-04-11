@@ -14,16 +14,17 @@ interface UtauHeaderProps {
   isTransitioning: boolean;
   onChangeDataset: (ds: string) => void;
   isAnomalySourceTabEnabled: boolean;
+  isDataSourceTabEnabled: boolean;
   isRlPolicySuggestionsEnabled?: boolean;
-  activeFeatureTab: 'live' | 'anomaly-source';
-  onFeatureTabChange: (tab: 'live' | 'anomaly-source') => void;
+  activeFeatureTab: 'live' | 'anomaly-source' | 'data-source';
+  onFeatureTabChange: (tab: 'live' | 'anomaly-source' | 'data-source') => void;
   onNavigateHome: () => void;
   onNavigateToChat: () => void;
 }
 
 export function UtauHeader({
   state, isConnected, tabs, activeDataset, isTransitioning,
-  onChangeDataset, isAnomalySourceTabEnabled, isRlPolicySuggestionsEnabled,
+  onChangeDataset, isAnomalySourceTabEnabled, isDataSourceTabEnabled, isRlPolicySuggestionsEnabled,
   activeFeatureTab, onFeatureTabChange, onNavigateHome, onNavigateToChat
 }: UtauHeaderProps) {
   const color = stateColor(state);
@@ -87,6 +88,14 @@ export function UtauHeader({
             onClick={() => onFeatureTabChange('anomaly-source')}
           >
             <Cpu size={12} color="var(--crimson)" /> ANOMALY SOURCE
+          </button>
+        )}
+        {isDataSourceTabEnabled && (
+          <button
+            style={{ ...tabStyle(activeFeatureTab === 'data-source'), display: 'flex', alignItems: 'center', gap: 8 }}
+            onClick={() => onFeatureTabChange('data-source')}
+          >
+            <Activity size={12} color="var(--teal)" /> DATA SOURCES
           </button>
         )}
         {isRlPolicySuggestionsEnabled && (
