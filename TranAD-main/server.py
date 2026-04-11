@@ -6,16 +6,27 @@ import torch
 import torch.nn as nn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from collections import deque
 import os
 from dotenv import load_dotenv
-load_dotenv()
+
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+_WORKSPACE_ROOT = os.path.dirname(_SERVER_DIR)
+load_dotenv(os.path.join(_SERVER_DIR, ".env"))
+_frontend_env_path = os.path.join(_WORKSPACE_ROOT, "Frontend", ".env")
+if os.path.exists(_frontend_env_path):
+    # Allows local dev fallback when API keys are staged in Frontend/.env.
+    load_dotenv(_frontend_env_path, override=False)
 
 import gc
 import time
 import math
 import sqlite3
+import csv
+import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 try:
@@ -75,7 +86,6 @@ FUSED_THRESHOLD_PERCENTILE = float(os.getenv("FUSED_THRESHOLD_PERCENTILE", "97.5
 FUSED_THRESHOLD_WARMUP = int(os.getenv("FUSED_THRESHOLD_WARMUP", "120"))
 
 # Phase 4 governance controls
-_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 FEEDBACK_DB_PATH = os.getenv("FEEDBACK_DB_PATH", os.path.join(_SERVER_DIR, "results", "operator_feedback.db"))
 DRIFT_MONITOR_INTERVAL_SEC = int(os.getenv("DRIFT_MONITOR_INTERVAL_SEC", "10"))
 DRIFT_MIN_POINTS = int(os.getenv("DRIFT_MIN_POINTS", "120"))
@@ -97,6 +107,18 @@ TWILIO_FROM_WHATSAPP = os.getenv("TWILIO_FROM_WHATSAPP", "whatsapp:+14155238886"
 TWILIO_TO_NUMBERS    = [n.strip() for n in os.getenv("TWILIO_TO_WHATSAPP", "").split(",") if n.strip()]
 TWILIO_COOLDOWN      = int(os.getenv("TWILIO_ALERT_COOLDOWN_SEC", "30"))
 TWILIO_MIN_SEV       = os.getenv("TWILIO_MIN_SEVERITY", "warning")  # info | warning | critical
+
+# Optional LLM-backed SOP generation
+SOP_LLM_PROVIDER = os.getenv("SOP_LLM_PROVIDER", "groq").strip().lower()
+SOP_OPENAI_API_KEY = os.getenv("SOP_OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
+SOP_OPENAI_MODEL = os.getenv("SOP_OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
+SOP_OPENAI_ENDPOINT = os.getenv("SOP_OPENAI_ENDPOINT", "https://api.openai.com/v1/chat/completions").strip()
+SOP_GROQ_API_KEY = os.getenv("SOP_GROQ_API_KEY", os.getenv("GROQ_API_KEY", os.getenv("VITE_GROQ_API_KEY", ""))).strip()
+SOP_GROQ_MODEL = os.getenv("SOP_GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+SOP_GROQ_ENDPOINT = os.getenv("SOP_GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
+SOP_LLM_TIMEOUT_SEC = float(os.getenv("SOP_LLM_TIMEOUT_SEC", "20"))
+SOP_HISTORY_PATH = os.getenv("SOP_HISTORY_PATH", os.path.join(_SERVER_DIR, "results", "sop_history.ndjson"))
+SENSOR_NAME_MAP_PATH = os.getenv("SENSOR_NAME_MAP_PATH", os.path.join(_SERVER_DIR, "results", "sensor_name_map.json"))
 
 # Kafka streaming controls
 KAFKA_CONSUMER_ENABLED = _env_flag("KAFKA_CONSUMER_ENABLED", "true")
@@ -195,6 +217,8 @@ last_score_meta = {
     "fused_score": 0.0,
     "threshold": float(runtime_policy["fused_threshold_default"]),
 }
+sensor_name_map_cache: dict[str, dict[str, str]] = {}
+sensor_name_map_loaded_ms = 0
 
 feedback_db_lock = asyncio.Lock()
 governance_task = None
@@ -338,6 +362,13 @@ class SourceUpdatePayload(BaseModel):
 class SourceMappingValidatePayload(BaseModel):
     sample: Optional[dict[str, Any]] = None
 
+class SOPRequest(BaseModel):
+    objective: str = "Prevent recurrence at source"
+    constraints: list[str] = Field(default_factory=list)
+    max_steps: int = 8
+    force_llm: bool = False
+    model: Optional[str] = None
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -354,6 +385,185 @@ def _model_dump(payload: BaseModel, **kwargs) -> dict[str, Any]:
     if hasattr(payload, "model_dump"):
         return payload.model_dump(**kwargs)
     return payload.dict(**kwargs)
+
+def _load_sensor_name_map(force: bool = False) -> dict[str, dict[str, str]]:
+    global sensor_name_map_cache, sensor_name_map_loaded_ms
+    if sensor_name_map_cache and not force:
+        return sensor_name_map_cache
+
+    path = Path(SENSOR_NAME_MAP_PATH)
+    if not path.exists():
+        sensor_name_map_cache = {}
+        sensor_name_map_loaded_ms = _now_ms()
+        return sensor_name_map_cache
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        sensor_name_map_cache = {}
+        sensor_name_map_loaded_ms = _now_ms()
+        return sensor_name_map_cache
+
+    normalized: dict[str, dict[str, str]] = {}
+    if isinstance(raw, dict):
+        for ds_name, ds_mapping in raw.items():
+            if not isinstance(ds_mapping, dict):
+                continue
+            ds_key = str(ds_name).strip()
+            if not ds_key:
+                continue
+            inner: dict[str, str] = {}
+            for sensor_key, sensor_label in ds_mapping.items():
+                k = str(sensor_key).strip()
+                label = str(sensor_label).strip()
+                if not k or not label:
+                    continue
+                inner[k] = label
+                if k.startswith("s"):
+                    inner[k[1:]] = label
+            normalized[ds_key] = inner
+            normalized[ds_key.upper()] = inner
+
+    sensor_name_map_cache = normalized
+    sensor_name_map_loaded_ms = _now_ms()
+    return sensor_name_map_cache
+
+def _parse_smd_anomalous_sensor_ids(machine_id: str) -> set[int]:
+    result: set[int] = set()
+    path = Path(_SERVER_DIR) / "data" / "SMD" / "interpretation_label" / f"{machine_id}.txt"
+    if not path.exists():
+        return result
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return result
+    for line in lines:
+        _window, sep, sensor_block = line.partition(":")
+        if sep != ":":
+            continue
+        for token in sensor_block.split(","):
+            t = token.strip()
+            if not t:
+                continue
+            try:
+                result.add(int(t))
+            except ValueError:
+                continue
+    return result
+
+def _parse_telemanom_classes(spacecraft: str, chan_id: str) -> list[str]:
+    path = Path(_SERVER_DIR) / "data" / "SMAP_MSL" / "labeled_anomalies.csv"
+    if not path.exists():
+        return []
+    found: list[str] = []
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get("spacecraft", "")).strip().upper() != spacecraft.upper():
+                    continue
+                if str(row.get("chan_id", "")).strip() != chan_id:
+                    continue
+                class_raw = str(row.get("class", "")).strip()
+                class_raw = class_raw.strip("[]")
+                parts = [p.strip().strip("'\"") for p in class_raw.split(",") if p.strip()]
+                for item in parts:
+                    if item and item not in found:
+                        found.append(item)
+                break
+    except Exception:
+        return []
+    return found
+
+def _build_real_dataset_sensor_map(dataset: str, source_id: str, feature_count: int) -> dict[str, str]:
+    ds = str(dataset or "").strip()
+    src = str(source_id or "").strip()
+    if feature_count <= 0:
+        return {}
+
+    labels: dict[str, str] = {}
+    if ds == "SMD":
+        hist_anom_ids = _parse_smd_anomalous_sensor_ids(src)
+        for idx in range(feature_count):
+            sensor_num = idx + 1
+            label = f"{src} sensor {sensor_num:02d}"
+            if sensor_num in hist_anom_ids:
+                label += " (historical anomaly-linked)"
+            labels[f"s{idx}"] = label
+    elif ds in {"SMAP", "MSL"}:
+        classes = _parse_telemanom_classes(ds, src)
+        suffix = ""
+        if classes:
+            suffix = f" ({'/'.join(classes)})"
+        for idx in range(feature_count):
+            labels[f"s{idx}"] = f"{ds} {src} telemetry {idx + 1:02d}{suffix}"
+    elif ds == "ESP32":
+        for idx in range(feature_count):
+            labels[f"s{idx}"] = f"ESP32 channel {idx + 1:02d}"
+    elif ds == "synthetic":
+        for idx in range(feature_count):
+            labels[f"s{idx}"] = f"Synthetic signal {idx + 1:02d}"
+    else:
+        for idx in range(feature_count):
+            labels[f"s{idx}"] = f"{ds} feature {idx + 1:02d}"
+
+    return labels
+
+def _register_runtime_sensor_name_map(dataset: str, source_id: str, feature_count: int) -> None:
+    if feature_count <= 0:
+        return
+    mapping = _load_sensor_name_map(force=False)
+    ds = str(dataset or "").strip()
+    if not ds:
+        return
+    src = str(source_id or "").strip() or _DATASET_FEATURE_SOURCE.get(ds, "")
+    generated = _build_real_dataset_sensor_map(ds, src, feature_count)
+    if not generated:
+        return
+
+    source_key = f"{ds.upper()}:{src}"
+    combined = dict(generated)
+    existing_source_map = mapping.get(source_key, {})
+    if isinstance(existing_source_map, dict):
+        combined.update(existing_source_map)
+    mapping[source_key] = combined
+
+    ds_key = ds.upper()
+    existing_ds_map = mapping.get(ds_key)
+    if not isinstance(existing_ds_map, dict) or not existing_ds_map:
+        mapping[ds_key] = dict(generated)
+
+    global sensor_name_map_cache, sensor_name_map_loaded_ms
+    sensor_name_map_cache = mapping
+    sensor_name_map_loaded_ms = _now_ms()
+
+def _sensor_label(sensor_name: str, dataset: Optional[str] = None, source_id: Optional[str] = None) -> str:
+    mapping = _load_sensor_name_map(force=False)
+    ds = str(dataset or DATASET).strip()
+    src = str(source_id or model_registry.get("feature_source_id", "")).strip()
+    candidate_maps = []
+    if ds and src:
+        candidate_maps.append(mapping.get(f"{ds}:{src}"))
+        candidate_maps.append(mapping.get(f"{ds.upper()}:{src}"))
+    candidate_maps.append(mapping.get(ds))
+    candidate_maps.append(mapping.get(ds.upper()))
+
+    sensor_key = str(sensor_name).strip()
+    if not sensor_key:
+        return sensor_name
+    for ds_map in candidate_maps:
+        if isinstance(ds_map, dict):
+            if sensor_key in ds_map:
+                return str(ds_map[sensor_key])
+            if sensor_key.startswith("s") and sensor_key[1:] in ds_map:
+                return str(ds_map[sensor_key[1:]])
+    return sensor_name
+
+def _append_sop_history_record(record: dict[str, Any]) -> None:
+    path = Path(SOP_HISTORY_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 def _append_influx_deadletter(batch: list[dict], reason: str):
     path = Path(INFLUX_DEADLETTER_PATH)
@@ -372,6 +582,13 @@ _SOURCE_DATASETS = {"SMD", "MSL", "SMAP", "ESP32", "synthetic"}
 _SOURCE_SECRET_KEYS = ("token", "password", "secret", "key")
 _MODEL_DATASET_ALIASES = {
     "ESP32": "synthetic",
+}
+_DATASET_FEATURE_SOURCE = {
+    "SMD": "machine-1-1",
+    "MSL": "C-1",
+    "SMAP": "A-1",
+    "synthetic": "synthetic",
+    "ESP32": "esp32-replay",
 }
 
 def _mask_secret(value: Any) -> str:
@@ -1170,7 +1387,13 @@ def _resolve_checkpoint_and_version(target_ds: str):
 
     return str(ckpt_path), model_version
 
-def _update_model_registry(dataset: str, model_version: str, checkpoint_path: str):
+def _update_model_registry(
+    dataset: str,
+    model_version: str,
+    checkpoint_path: str,
+    feature_source_id: str,
+    feature_count: int,
+):
     global model_registry
     mtime = 0.0
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -1182,6 +1405,8 @@ def _update_model_registry(dataset: str, model_version: str, checkpoint_path: st
         "checkpoint_path": checkpoint_path,
         "checkpoint_mtime": float(mtime),
         "loaded_at_ms": _now_ms(),
+        "feature_source_id": feature_source_id,
+        "feature_count": int(feature_count),
     }
 
 def _reset_ingestion_state(dim: int):
@@ -1482,9 +1707,14 @@ def _correlation_change_snapshot(history_window: np.ndarray, top_k: int = 5) -> 
     for idx in top_order:
         r = int(tri_r[idx])
         c = int(tri_c[idx])
+        sensor_a = f"s{r}"
+        sensor_b = f"s{c}"
+        source_id = str(model_registry.get("feature_source_id", ""))
         top_changes.append({
-            "sensor_a": f"s{r}",
-            "sensor_b": f"s{c}",
+            "sensor_a": sensor_a,
+            "sensor_b": sensor_b,
+            "sensor_a_label": _sensor_label(sensor_a, DATASET, source_id),
+            "sensor_b_label": _sensor_label(sensor_b, DATASET, source_id),
             "prev_corr": float(c_prev[r, c]),
             "curr_corr": float(c_curr[r, c]),
             "delta": float(diff[r, c]),
@@ -1524,10 +1754,13 @@ def _rank_contributors(recon_vec: np.ndarray, forecast_vec: np.ndarray, top_k: i
     total = float(np.sum(blended) + 1e-12)
     order = np.argsort(blended)[::-1][:top_k]
     ranked = []
+    source_id = str(model_registry.get("feature_source_id", ""))
     for idx in order:
         contribution_pct = float((blended[idx] / total) * 100.0)
+        sensor_name = f"s{int(idx)}"
         ranked.append({
-            "sensor": f"s{int(idx)}",
+            "sensor": sensor_name,
+            "sensor_label": _sensor_label(sensor_name, DATASET, source_id),
             "importance": float(blended[idx]),
             "contribution_pct": contribution_pct,
             "recon_error": float(recon_vec[idx]),
@@ -1573,7 +1806,8 @@ def _investigation_hints(anomaly_type: str, contributors: list[dict], corr_score
     hints = []
     if contributors:
         top = contributors[0]
-        hints.append(f"Inspect {top['sensor']} first; highest contribution {top['contribution_pct']:.1f}%.")
+        top_name = top.get("sensor_label") or top.get("sensor", "sensor")
+        hints.append(f"Inspect {top_name} first; highest contribution {top['contribution_pct']:.1f}%.")
     if anomaly_type == "collective_anomaly":
         hints.append(f"Check cross-sensor dependency break; correlation shift score={corr_score:.6f}.")
     elif anomaly_type == "contextual_anomaly":
@@ -1581,8 +1815,204 @@ def _investigation_hints(anomaly_type: str, contributors: list[dict], corr_score
     else:
         hints.append("Investigate sudden local spike and recent actuator/control actions.")
     if len(contributors) > 1:
-        hints.append(f"Compare {contributors[0]['sensor']} with {contributors[1]['sensor']} for coupled deviation.")
+        a_name = contributors[0].get("sensor_label") or contributors[0].get("sensor", "sensor_a")
+        b_name = contributors[1].get("sensor_label") or contributors[1].get("sensor", "sensor_b")
+        hints.append(f"Compare {a_name} with {b_name} for coupled deviation.")
     return hints[:4]
+
+def _sensor_idx_from_name(sensor_name: str) -> Optional[int]:
+    if not isinstance(sensor_name, str):
+        return None
+    s = sensor_name.strip().lower()
+    if not s.startswith("s"):
+        return None
+    try:
+        return int(s[1:])
+    except ValueError:
+        return None
+
+def _build_sensor_snapshot(
+    actual_sensors: np.ndarray,
+    forecast_sensors: np.ndarray,
+    recon_vec: np.ndarray,
+    forecast_vec: np.ndarray,
+    top_contributors: list[dict],
+) -> dict:
+    source_id = str(model_registry.get("feature_source_id", ""))
+    actual_arr = np.asarray(actual_sensors, dtype=np.float64).reshape(-1)
+    forecast_arr = np.asarray(forecast_sensors, dtype=np.float64).reshape(-1)
+    recon_arr = np.asarray(recon_vec, dtype=np.float64).reshape(-1)
+    forecast_err_arr = np.asarray(forecast_vec, dtype=np.float64).reshape(-1)
+    residual_abs = np.abs(forecast_arr - actual_arr)
+
+    top_sensor_details: list[dict[str, Any]] = []
+    for contributor in top_contributors[:5]:
+        sensor_name = str(contributor.get("sensor", ""))
+        idx = _sensor_idx_from_name(sensor_name)
+        if idx is None or idx < 0 or idx >= actual_arr.shape[0]:
+            continue
+        top_sensor_details.append({
+            "sensor": sensor_name,
+            "sensor_label": _sensor_label(sensor_name, DATASET, source_id),
+            "index": int(idx),
+            "contribution_pct": float(contributor.get("contribution_pct", 0.0)),
+            "actual": float(actual_arr[idx]),
+            "forecast": float(forecast_arr[idx]),
+            "abs_residual": float(residual_abs[idx]),
+            "recon_error": float(recon_arr[idx]),
+            "forecast_error": float(forecast_err_arr[idx]),
+        })
+
+    return {
+        "dimensions": int(actual_arr.shape[0]),
+        "top_sensors": top_sensor_details,
+        "actual_vector": [float(x) for x in actual_arr.tolist()],
+        "forecast_vector": [float(x) for x in forecast_arr.tolist()],
+        "recon_error_vector": [float(x) for x in recon_arr.tolist()],
+        "forecast_error_vector": [float(x) for x in forecast_err_arr.tolist()],
+    }
+
+def _find_anomaly_event(anomaly_id: int) -> Optional[dict[str, Any]]:
+    for event in anomaly_event_history:
+        if event.get("id") == anomaly_id:
+            return event
+    return None
+
+def _build_anomaly_source_payload(event: dict[str, Any]) -> dict[str, Any]:
+    top_sensor = str(event.get("top_sensor", "n/a"))
+    event_dataset = str(event.get("dataset", DATASET))
+    feature_source_id = str(event.get("feature_source_id", model_registry.get("feature_source_id", "")))
+    return {
+        "anomaly_id": int(event.get("id", 0)),
+        "dataset": str(event.get("dataset", "")),
+        "feature_source_id": feature_source_id,
+        "tick": int(event.get("tick", 0)),
+        "anomaly_type": str(event.get("anomaly_type", "")),
+        "severity_level": str(event.get("severity_level", "")),
+        "severity_score": int(event.get("severity_score", 0)),
+        "confidence": float(event.get("confidence", 0.0)),
+        "top_sensor": top_sensor,
+        "top_sensor_label": str(event.get("top_sensor_label", _sensor_label(top_sensor, event_dataset, feature_source_id))),
+        "top_contributors": list(event.get("top_contributors", [])),
+        "investigation_hints": list(event.get("investigation_hints", [])),
+        "score_components": dict(event.get("score_components", {})),
+        "anomaly_source": event.get("anomaly_source"),
+        "sensor_snapshot": event.get("sensor_snapshot"),
+        "sop_history": list(event.get("sop_history", [])),
+    }
+
+def _fallback_sop(event: dict[str, Any], request: SOPRequest) -> str:
+    top_sensor = str(event.get("top_sensor", "n/a"))
+    anomaly_type = str(event.get("anomaly_type", "unknown"))
+    severity = str(event.get("severity_level", "info"))
+    top_contributors = list(event.get("top_contributors", []))
+    hints = list(event.get("investigation_hints", []))
+    max_steps = int(max(3, min(15, request.max_steps)))
+    secondary = top_contributors[1]["sensor"] if len(top_contributors) > 1 else "n/a"
+    constraints = [str(x).strip() for x in request.constraints if str(x).strip()]
+
+    steps = [
+        f"Acknowledge {severity.upper()} {anomaly_type} event and isolate impacted subsystem around {top_sensor}.",
+        f"Validate {top_sensor} instrumentation: power, wiring, calibration, and timestamp freshness.",
+        f"Cross-check coupled sensor {secondary} for correlated drift before replacing any hardware.",
+        "Compare live readings against last known-good baseline and enforce safe operating envelope.",
+        "If mismatch persists, switch to fallback control mode and escalate to maintenance owner.",
+        "Apply corrective action, then monitor 15 minutes for recurrence and alert suppression stability.",
+        "Record root cause evidence and update preventive maintenance schedule for the affected sensor chain.",
+    ][:max_steps]
+
+    if hints:
+        steps.append(f"Analyst hint: {hints[0]}")
+        steps = steps[:max_steps]
+
+    constraint_block = ""
+    if constraints:
+        constraint_block = "\nConstraints:\n" + "\n".join([f"- {item}" for item in constraints])
+
+    return textwrap.dedent(
+        f"""
+        SOP Objective: {request.objective}
+        Event: anomaly_id={event.get('id')} dataset={event.get('dataset')} tick={event.get('tick')}
+        Source Focus: top_sensor={top_sensor}, anomaly_type={anomaly_type}, severity={severity}
+        Recommended Steps:
+        {chr(10).join([f"{idx + 1}. {step}" for idx, step in enumerate(steps)])}
+        Verification Gate:
+        1. Confirm fused score remains below threshold for 3 consecutive windows.
+        2. Verify top contributor concentration falls below 20% for prior top sensor.
+        3. Close incident only after operator sign-off and log archival.
+        {constraint_block}
+        """
+    ).strip()
+
+def _build_sop_llm_prompt(event: dict[str, Any], request: SOPRequest) -> str:
+    source_payload = _build_anomaly_source_payload(event)
+    compact = {
+        "objective": request.objective,
+        "constraints": request.constraints,
+        "event": source_payload,
+    }
+    return (
+        "You are an industrial anomaly response engineer. "
+        "Generate a concise, practical SOP with numbered steps, verification checks, "
+        "and rollback criteria. Focus on prevention at sensor source. "
+        "Return plain text only. Input JSON follows:\n" + json.dumps(compact, ensure_ascii=True)
+    )
+
+def _sop_llm_config() -> tuple[str, str, str]:
+    provider = str(SOP_LLM_PROVIDER or "").strip().lower()
+    if provider == "groq":
+        return provider, SOP_GROQ_API_KEY, SOP_GROQ_ENDPOINT
+    if provider == "openai":
+        return provider, SOP_OPENAI_API_KEY, SOP_OPENAI_ENDPOINT
+    return provider, "", ""
+
+def _generate_sop_with_llm(event: dict[str, Any], request: SOPRequest) -> str:
+    provider, api_key, endpoint = _sop_llm_config()
+    if provider not in {"groq", "openai"}:
+        raise RuntimeError(f"unsupported_llm_provider:{provider}")
+    if not api_key:
+        raise RuntimeError(f"{provider}_api_key_not_configured")
+
+    if provider == "groq":
+        default_model = SOP_GROQ_MODEL or "llama-3.3-70b-versatile"
+    else:
+        default_model = SOP_OPENAI_MODEL or "gpt-4o-mini"
+
+    model = (request.model or default_model).strip()
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You write precise incident SOPs for sensor anomalies.",
+            },
+            {
+                "role": "user",
+                "content": _build_sop_llm_prompt(event, request),
+            },
+        ],
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=SOP_LLM_TIMEOUT_SEC) as response:
+        body = response.read().decode("utf-8")
+    parsed = json.loads(body)
+    choices = parsed.get("choices", [])
+    if not choices:
+        raise RuntimeError("LLM returned no choices")
+    message = choices[0].get("message", {})
+    content = str(message.get("content", "")).strip()
+    if not content:
+        raise RuntimeError("LLM returned empty SOP content")
+    return content
 
 def _record_anomaly_event(
     tick: int,
@@ -1597,6 +2027,7 @@ def _record_anomaly_event(
     historical_similar: list[dict],
     investigation_hints: list[str],
     anomaly_source: Optional[dict],
+    sensor_snapshot: Optional[dict],
 ):
     global anomaly_event_seq
     anomaly_event_seq += 1
@@ -1604,6 +2035,7 @@ def _record_anomaly_event(
         "id": anomaly_event_seq,
         "created_at_ms": _now_ms(),
         "dataset": DATASET,
+        "feature_source_id": str(model_registry.get("feature_source_id", "")),
         "tick": tick,
         "system_loss": float(fused_score),
         "threshold": float(threshold),
@@ -1613,6 +2045,7 @@ def _record_anomaly_event(
         "anomaly_type": anomaly_type,
         "duration_steps": int(duration_steps),
         "top_sensor": top_contributors[0]["sensor"] if top_contributors else "n/a",
+        "top_sensor_label": top_contributors[0].get("sensor_label", top_contributors[0]["sensor"]) if top_contributors else "n/a",
         "top_contributors": top_contributors,
         "historical_similar": historical_similar,
         "investigation_hints": investigation_hints,
@@ -1622,6 +2055,8 @@ def _record_anomaly_event(
             "corr": float(last_score_meta.get("corr_score", 0.0)),
         },
         "anomaly_source": anomaly_source,
+        "sensor_snapshot": sensor_snapshot,
+        "sop_history": [],
     }
     anomaly_event_history.append(event)
     return event
@@ -1758,13 +2193,18 @@ def init_model(target_ds=None):
     ckpt_path, model_version = _resolve_checkpoint_and_version(target_ds)
     
     # Identify target dynamic files
+    feature_source_id = _DATASET_FEATURE_SOURCE.get(str(target_ds), _DATASET_FEATURE_SOURCE.get(storage_ds, "unknown"))
     if storage_ds == 'SMD':
-        test_arr = np.load(f'processed/{storage_ds}/machine-1-1_test.npy')
+        feature_source_id = "machine-1-1"
+        test_arr = np.load(f'processed/{storage_ds}/{feature_source_id}_test.npy')
     elif storage_ds == 'MSL':
-        test_arr = np.load(f'processed/{storage_ds}/C-1_test.npy')
+        feature_source_id = "C-1"
+        test_arr = np.load(f'processed/{storage_ds}/{feature_source_id}_test.npy')
     elif storage_ds == 'SMAP':
-        test_arr = np.load(f'processed/{storage_ds}/A-1_test.npy')
+        feature_source_id = "A-1"
+        test_arr = np.load(f'processed/{storage_ds}/{feature_source_id}_test.npy')
     elif storage_ds == 'synthetic':
+        feature_source_id = "esp32-replay" if str(target_ds) == "ESP32" else "synthetic"
         test_arr = np.load(f'processed/{storage_ds}/test.npy')
     else:
         raise ValueError(f"Unsupported dataset for STP server: {target_ds}")
@@ -1790,7 +2230,8 @@ def init_model(target_ds=None):
     else:
         print("WARNING: Checkpoint not found. Running with uninitialized random weights.")
     m.eval()
-    _update_model_registry(target_ds, model_version, ckpt_path)
+    _register_runtime_sensor_name_map(str(target_ds), feature_source_id, int(feats))
+    _update_model_registry(target_ds, model_version, ckpt_path, feature_source_id, int(feats))
     return m, opt, feats
 
 async def _send_whatsapp_alert(
@@ -1937,6 +2378,7 @@ async def startup_event():
     global model, optimizer, feats_dim, governance_task, kafka_consumer_task, influx_writer_task, influx_queue, rl_policy_manager
     _init_feedback_db()
     _load_source_registry()
+    _load_sensor_name_map(force=True)
     feedback_counters.update(_load_feedback_counters())
     model, optimizer, feats_dim = init_model()
     _reset_ingestion_state(feats_dim)
@@ -2233,6 +2675,7 @@ async def list_anomalies(
     anomaly_type: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    include_sop_history: bool = Query(False),
 ):
     events = list(anomaly_event_history)
     events.reverse()
@@ -2245,7 +2688,12 @@ async def list_anomalies(
             continue
         if anomaly_type and event["anomaly_type"] != anomaly_type:
             continue
-        filtered.append(event)
+        item = dict(event)
+        if not include_sop_history:
+            sop_hist = list(item.get("sop_history", []))
+            item["sop_history_count"] = len(sop_hist)
+            item.pop("sop_history", None)
+        filtered.append(item)
 
     total = len(filtered)
     page = filtered[offset:offset + limit]
@@ -2258,10 +2706,80 @@ async def list_anomalies(
 
 @app.get("/anomalies/{anomaly_id}")
 async def get_anomaly_detail(anomaly_id: int):
-    for event in anomaly_event_history:
-        if event["id"] == anomaly_id:
-            return event
+    event = _find_anomaly_event(anomaly_id)
+    if event is not None:
+        return event
     raise HTTPException(status_code=404, detail="anomaly_not_found")
+
+@app.get("/anomalies/{anomaly_id}/source")
+async def get_anomaly_source(anomaly_id: int):
+    event = _find_anomaly_event(anomaly_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="anomaly_not_found")
+    return _build_anomaly_source_payload(event)
+
+@app.post("/anomalies/{anomaly_id}/sop")
+async def generate_anomaly_sop(anomaly_id: int, payload: SOPRequest):
+    event = _find_anomaly_event(anomaly_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="anomaly_not_found")
+
+    llm_error = None
+    mode = "fallback"
+    sop_text = _fallback_sop(event, payload)
+
+    provider, api_key, _endpoint = _sop_llm_config()
+    should_try_llm = provider in {"groq", "openai"} and bool(api_key)
+    if payload.force_llm and not should_try_llm:
+        raise HTTPException(status_code=503, detail="llm_not_configured")
+
+    if should_try_llm:
+        try:
+            sop_text = await asyncio.to_thread(_generate_sop_with_llm, event, payload)
+            mode = "llm"
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, RuntimeError, ValueError) as exc:
+            llm_error = str(exc)
+            if payload.force_llm:
+                raise HTTPException(status_code=503, detail=f"llm_generation_failed: {exc}")
+
+    history_entry = {
+        "created_at_ms": _now_ms(),
+        "mode": mode,
+        "provider": provider,
+        "model": payload.model or (SOP_GROQ_MODEL if provider == "groq" else SOP_OPENAI_MODEL),
+        "objective": payload.objective,
+        "constraints": list(payload.constraints),
+        "sop": sop_text,
+        "llm_error": llm_error,
+    }
+    event.setdefault("sop_history", []).append(history_entry)
+    _append_sop_history_record({
+        "anomaly_id": anomaly_id,
+        "dataset": event.get("dataset", ""),
+        "tick": event.get("tick", 0),
+        **history_entry,
+    })
+
+    return {
+        "anomaly_id": anomaly_id,
+        "mode": mode,
+        "sop": sop_text,
+        "llm_error": llm_error,
+        "history_entry": history_entry,
+        "sop_history_total": len(event.get("sop_history", [])),
+        "source": _build_anomaly_source_payload(event),
+    }
+
+@app.get("/anomalies/{anomaly_id}/sop/history")
+async def get_anomaly_sop_history(anomaly_id: int):
+    event = _find_anomaly_event(anomaly_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="anomaly_not_found")
+    return {
+        "anomaly_id": anomaly_id,
+        "items": list(event.get("sop_history", [])),
+        "total": len(event.get("sop_history", [])),
+    }
 
 @app.get("/api/feedback_history")
 async def get_feedback_history_api(limit: int = 5):
@@ -2864,6 +3382,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     ),
                 }
 
+            sensor_snapshot = None
+            if is_anomalous:
+                sensor_snapshot = _build_sensor_snapshot(
+                    actual_sensors=np.asarray(actual_sensors, dtype=np.float64),
+                    forecast_sensors=np.asarray(pred_future, dtype=np.float64),
+                    recon_vec=np.asarray(recon_loss, dtype=np.float64),
+                    forecast_vec=np.asarray(forecast_loss, dtype=np.float64),
+                    top_contributors=top_contributors,
+                )
+
             payload = {
                 "tick": current_tick,
                 "system_loss": fused_score,
@@ -2955,6 +3483,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     historical_similar=similar_history,
                     investigation_hints=hints,
                     anomaly_source=anomaly_source_info,
+                    sensor_snapshot=sensor_snapshot,
                 )
 
             await websocket.send_text(json.dumps(payload))
