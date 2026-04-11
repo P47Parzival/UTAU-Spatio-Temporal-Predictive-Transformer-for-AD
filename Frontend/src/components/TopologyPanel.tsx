@@ -12,12 +12,16 @@ type SysState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 function accent(s: SysState) { return s === 'CRITICAL' ? CR : s === 'WARNING' ? CU : G; }
 
 function SingleAsset({ dataset, systemState }: { dataset: string; systemState: SysState }) {
+  const datasetKey = dataset.toUpperCase();
+  const baseRotationX = datasetKey === 'ESP32' ? -Math.PI / 2 : 0;
+  const baseRotationY = datasetKey === 'ESP32' ? Math.PI : 0;
   const path = {
     SMD: '/src/assets/server_rack.glb',
     MSL: '/src/assets/industrial_robot.glb',
     SMAP: '/src/assets/centrifugal_pump__bomba_centrifuga.glb',
-    SYNTHETIC: '/src/assets/gearbox_planetary.glb',
-  }[dataset] || '/src/assets/server_rack.glb';
+    ESP32: '/src/assets/esp32.glb',
+    SYNTHETIC: '/src/assets/data_center_rack.glb',
+  }[datasetKey] || '/src/assets/server_rack.glb';
 
   const { scene } = useGLTF(path);
   const ref = useRef<THREE.Group>(null!);
@@ -45,7 +49,8 @@ function SingleAsset({ dataset, systemState }: { dataset: string; systemState: S
 
   useFrame(({ clock }) => {
     if (ref.current) {
-      ref.current.rotation.y = clock.getElapsedTime() * 0.4;
+      ref.current.rotation.x = baseRotationX;
+      ref.current.rotation.y = baseRotationY + clock.getElapsedTime() * 0.4;
     }
   });
 
@@ -67,9 +72,12 @@ function AssetViewer({ dataset, systemState }: { dataset: string; systemState: S
         <Box size={10} color={TD} />
         <span className="section-label" style={{ color: TD }}>DIGITAL TWIN: {dataset}</span>
       </div>
-      <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true }}>
-        <ambientLight intensity={0.6} color="#FFF5E0" />
-        <directionalLight position={[4, 6, 4]} intensity={1.8} color="#FFE0A0" castShadow shadow-mapSize={[1024, 1024]} />
+      <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true, toneMappingExposure: 1.2 }}>
+        <ambientLight intensity={0.95} color="#FFF5E0" />
+        <hemisphereLight intensity={0.55} color="#FFF1D2" groundColor="#8B6B36" />
+        <directionalLight position={[4, 6, 4]} intensity={2.4} color="#FFE0A0" castShadow shadow-mapSize={[1024, 1024]} />
+        <pointLight position={[-3, 2.5, 2]} intensity={0.9} color="#FFD6A3" distance={8} />
+        <Environment preset="warehouse" intensity={0.6} />
         <OrbitControls enableZoom={false} enablePan={false} maxPolarAngle={Math.PI / 1.8} autoRotate={false} />
         <Suspense fallback={null}>
           <SingleAsset dataset={dataset} systemState={systemState} />
