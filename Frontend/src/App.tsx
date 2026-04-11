@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { UtauHeader }  from './components/Header';
 import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
@@ -64,6 +66,56 @@ export default function App() {
   const [anomalyPopup, setAnomalyPopup] = useState<{ show: boolean; msg: string; dataset: string }>({ show: false, msg: '', dataset: '' });
   const hasAlertedRef = useRef(false);
 
+  const generatePDFReport = async () => {
+    try {
+      // 1. Fetch data from backend
+      const res = await fetch('http://127.0.0.1:8000/api/feedback_history?limit=100');
+      if (!res.ok) throw new Error("Failed to fetch feedback history");
+      const history = await res.json();
+
+      // 2. Initialize jsPDF
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      
+      // 3. Document Title
+      doc.setFontSize(22);
+      doc.setTextColor(40, 40, 40);
+      doc.text("UTAU-IIoT Operational Threat Report", 14, 22);
+
+      doc.setFontSize(11);
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Active Dataset: ${activeDataset.toUpperCase()}`, 14, 30);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 36);
+
+      // 4. Construct Table
+      const tableColumn = ["ID", "Time", "Tick", "Dataset", "Anomaly Type", "Severity", "Confirmed", "Notes"];
+      const tableRows = history.map((item: any) => [
+        item.id,
+        new Date(item.created_at_ms).toLocaleString(),
+        item.tick || 'N/A',
+        item.dataset,
+        item.anomaly_type || 'Unknown Error',
+        item.severity_level || 'N/A',
+        item.was_anomaly ? 'Yes' : 'No',
+        item.note || ''
+      ]);
+
+      // 5. Generate AutoTable
+      autoTable(doc, {
+        head: [tableColumn],
+        body: tableRows,
+        startY: 45,
+        theme: 'grid',
+        headStyles: { fillColor: [184, 134, 42], textColor: [255, 255, 255] }, // Gold Theme Header
+        alternateRowStyles: { fillColor: [248, 245, 240] },
+        styles: { fontSize: 9, cellPadding: 3, font: 'helvetica' }
+      });
+
+      // 6. Save
+      doc.save(`UTAU_Threat_Report_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error("Failed to generate PDF Data Report", err);
+    }
+  };
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -227,7 +279,7 @@ export default function App() {
   }
 
   return (
-    <div id="utau-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
+    <div id="utau-dashboard-capture" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg-page)' }}>
       
       {/* ── Custom Animated Anomaly Popup ── */}
       <AnimatePresence>
@@ -273,6 +325,7 @@ export default function App() {
           activeFeatureTab={activeFeatureTab} onFeatureTabChange={setActiveFeatureTab}
           onNavigateHome={() => navigateTo('/landing')}
           onNavigateToChat={() => navigateTo('/ai-chat')}
+          onGeneratePDF={generatePDFReport}
         />
       </div>
 

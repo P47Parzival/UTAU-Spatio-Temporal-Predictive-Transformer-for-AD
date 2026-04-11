@@ -107,7 +107,7 @@ function AssetViewer({ dataset, systemState }: { dataset: string; systemState: S
         <Box size={10} color={isHealthy ? TD : CR} />
         <span className="section-label" style={{ color: isHealthy ? TD : CR, transition: 'color 0.5s' }}>DIGITAL TWIN: {dataset}</span>
       </div>
-      <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true, toneMappingExposure: 1.2 }}>
+      <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true, toneMappingExposure: 1.2, preserveDrawingBuffer: true }}>
         <ambientLight intensity={isHealthy ? 0.95 : 0.4} color={isHealthy ? "#FFF5E0" : CR} />
         <hemisphereLight intensity={isHealthy ? 0.55 : 0.8} color={isHealthy ? "#FFF1D2" : CR} groundColor={isHealthy ? "#8B6B36" : "#400000"} />
         <directionalLight position={[4, 6, 4]} intensity={isHealthy ? 2.4 : 1.0} color={isHealthy ? "#FFE0A0" : CR} castShadow shadow-mapSize={[1024, 1024]} />

@@ -111,7 +111,7 @@ export default function Model3D({
     <div style={style}>
       <Canvas
         camera={{ position: [0, 1, cameraZ], fov: 42 }}
-        gl={{ antialias: true, alpha: true }}
+        gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}
         style={{ background: 'transparent' }}
       >
         <ambientLight intensity={1.0} />

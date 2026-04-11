@@ -1,5 +1,5 @@
 // Header.tsx — Dark Prestige UTAU Command Center Header
-import { Activity, Cpu, Radio, Zap, MessageSquare } from 'lucide-react';
+import { Activity, Cpu, Radio, Zap, MessageSquare, FileDown } from 'lucide-react';
 
 export type SystemState = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 
@@ -20,12 +20,13 @@ interface UtauHeaderProps {
   onFeatureTabChange: (tab: 'live' | 'anomaly-source' | 'data-source') => void;
   onNavigateHome: () => void;
   onNavigateToChat: () => void;
+  onGeneratePDF?: () => void;
 }
 
 export function UtauHeader({
   state, isConnected, tabs, activeDataset, isTransitioning,
   onChangeDataset, isAnomalySourceTabEnabled, isDataSourceTabEnabled, isRlPolicySuggestionsEnabled,
-  activeFeatureTab, onFeatureTabChange, onNavigateHome, onNavigateToChat
+  activeFeatureTab, onFeatureTabChange, onNavigateHome, onNavigateToChat, onGeneratePDF
 }: UtauHeaderProps) {
   const color = stateColor(state);
 
@@ -109,6 +110,16 @@ export function UtauHeader({
         >
           <MessageSquare size={12} color="#F0EBE0" /> AI COPILOT
         </button>
+        {onGeneratePDF && (
+          <button
+            style={{ ...tabStyle(false), display: 'flex', alignItems: 'center', gap: 8, border: '1px solid rgba(201,146,42,0.4)', borderRadius: '4px', padding: '4px 12px', background: 'rgba(201,146,42,0.1)', marginLeft: 8 }}
+            onClick={onGeneratePDF}
+            title="Export High-Quality PDF Report"
+          >
+            <FileDown size={14} color="var(--gold-bright)" /> 
+            <span style={{ color: 'var(--gold-bright)', fontWeight: 600 }}>EXPORT PDF</span>
+          </button>
+        )}
       </div>
 
       {/* ── Status + Connection ── */}
