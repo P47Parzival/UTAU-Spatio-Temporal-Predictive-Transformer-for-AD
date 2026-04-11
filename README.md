@@ -1,303 +1,535 @@
-Utau-Spatio-Temporal-Predictive-Transformer-for-AD
-conda activate D:\conda_envs\tranad
+# UTAU: Streaming Anomaly Detection SOTA Novel Platform (Custom NN STP_TranAD + Dashboard + ESP32)
 
-SMD
+A custom Neural network architecture based solution for anomaly detectiot, outperforming SOTA baseline architectures like TranAD, GDN, etc. :
 
-          f1  precision  recall      TP       TN      FP      FN   ROC/AUC     threshold
-0   0.993088   0.986281     1.0  2660.0  25782.0    37.0     0.0  0.999283  2.589952e-01    
-1   0.923236   0.857426     1.0  1732.0  26459.0   288.0     0.0  0.994616  1.650540e-01    
-2   0.655017   0.487013     1.0  1275.0  25861.0  1343.0     0.0  0.975316  7.880503e-02    
-3   0.599009   0.427565     1.0  1275.0  25497.0  1707.0     0.0  0.968626  6.543762e-02    
-4   0.000000   0.000000     0.0     0.0  28479.0     0.0     0.0       NaN  2.550235e-07    
-5   0.000000   0.000000     0.0     0.0  27925.0     0.0   554.0  0.500000  4.376680e-01    
-6   0.815901   0.689055     1.0   554.0  27675.0   250.0     0.0  0.995524  1.375817e-01    
-7   0.000000   0.000000     0.0     0.0  26581.0  1898.0     0.0       NaN  4.667564e-07    
-8   0.997191   0.994407     1.0  2667.0  25797.0    15.0     0.0  0.999709  6.518346e-03    
-9   0.999995   1.000000     1.0  2660.0  25819.0     0.0     0.0  1.000000  1.086064e-02    
-10  0.000000   0.000000     0.0     0.0  27204.0     0.0  1275.0  0.500000  1.123194e+00    
-11  0.999995   1.000000     1.0  2660.0  25819.0     0.0     0.0  1.000000  3.414353e-01    
-12  0.999433   0.998876     1.0  2667.0  25809.0     3.0     0.0  0.999942  8.174736e-02    
-13  0.995887   0.991819     1.0  2667.0  25790.0    22.0     0.0  0.999574  1.494053e-02    
-14  0.997750   0.995521     1.0  2667.0  25800.0    12.0     0.0  0.999768  9.313048e-02    
-15  0.000000   0.000000     0.0     0.0  27204.0     0.0  1275.0  0.500000  1.122292e+00    
-16  0.000000   0.000000     0.0     0.0  27080.0  1399.0     0.0       NaN  2.788094e-07    
-17  0.000000   0.000000     0.0     0.0  28479.0     0.0     0.0       NaN  9.046074e-07    
-18  0.508486   0.340923     1.0   554.0  26854.0  1071.0     0.0  0.980824  9.207422e-02    
-19  0.544735   0.374324     1.0   554.0  26999.0   926.0     0.0  0.983420  1.394064e-01    
-20  0.448217   0.288843     1.0   554.0  26561.0  1364.0     0.0  0.975577  1.128649e-01    
-21  0.453537   0.293277     1.0   554.0  26590.0  1335.0     0.0  0.976097  8.462688e-02    
-22  0.000000   0.000000     0.0     0.0  28479.0     0.0     0.0       NaN  1.013628e+00    
-23  0.924870   0.860248     1.0   554.0  27835.0    90.0     0.0  0.998389  1.114271e-03    
-24  0.702862   0.541861     1.0  1275.0  26126.0  1078.0     0.0  0.980187  2.653132e-02    
-25  0.913433   0.840668     1.0   554.0  27820.0   105.0     0.0  0.998120  9.490663e-04    
-26  0.999995   1.000000     1.0   554.0  27925.0     0.0     0.0  1.000000  1.040484e-07    
-27  0.677826   0.512666     1.0  1275.0  25992.0  1212.0     0.0  0.977724  8.210342e-02    
-28  0.428789   0.272906     1.0   554.0  26449.0  1476.0     0.0  0.973572  2.310676e-07    
-29  0.113199   0.059996     1.0   554.0  19245.0  8680.0     0.0  0.844584  6.971308e-04    
-30  0.436561   0.279234     1.0   554.0  26495.0  1430.0     0.0  0.974396  7.181040e-02    
-31  0.595375   0.423871     1.0   554.0  27172.0   753.0     0.0  0.986517  6.734198e-02    
-32  0.990165   0.980531     1.0   554.0  27914.0    11.0     0.0  0.999803  2.143518e-06    
-33  0.986638   0.973638     1.0   554.0  27910.0    15.0     0.0  0.999731  4.122027e-07    
-34  0.445513   0.286601     1.0   554.0  26546.0  1379.0     0.0  0.975309  9.631174e-02    
-35  0.445334   0.286453     1.0   554.0  26545.0  1380.0     0.0  0.975291  9.625448e-02    
-36  0.000000   0.000000     0.0     0.0  28479.0     0.0     0.0       NaN  4.171309e-07    
-37  0.000000   0.000000     0.0     0.0  28479.0     0.0     0.0       NaN  6.490433e-07    
-{'FN': 7,
- 'FP': 656,
- 'Hit@100%': 0.4285563094935713,
- 'Hit@150%': 0.5788606781295196,
- 'NDCG@100%': 0.4059122885532901,
- 'NDCG@150%': 0.49479912865301634,
- 'ROC/AUC': 0.9859803961046013,
- 'TN': 25156,
- 'TP': 2660,
- 'f1': 0.8891810829648534,
- 'precision': 0.8021712882926076,
- 'recall': 0.9973753243442994,
- 'threshold': 0.056512260415344365}
+## Architecture Diagram
 
+![Architecture Diagram](assets/UTAU_NN_arch.png)
 
- MSL
-           f1  precision  recall     TP      TN     FP     FN   ROC/AUC     threshold
-0   0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.050637e+00
-1   0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  8.255505e-08
-2   0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  4.801134e-08
-3   0.848148   0.736342     1.0  310.0  1843.0  111.0    0.0  0.971597  7.284417e-08
-4   0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  9.573456e-08
-5   0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.038953e+00
-6   0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  6.173722e-08
-7   0.535865   0.365998     1.0  310.0  1417.0  537.0    0.0  0.862590  3.496772e-08
-8   0.903785   0.824468     1.0  310.0  1888.0   66.0    0.0  0.983112  1.454041e-07
-9   0.644486   0.475460     1.0  310.0  1612.0  342.0    0.0  0.912487  6.480730e-08
-10  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  7.920398e-08        
-11  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039066e+00        
-12  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039078e+00        
-13  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.201067e-07        
-14  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  7.972381e-08        
-15  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  7.334372e-08        
-16  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  7.612562e-08        
-17  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.067793e-07        
-18  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  6.681792e-08        
-19  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  9.608253e+49        
-20  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  9.992338e+50        
-21  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.239946e-08        
-22  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  7.237464e-08        
-23  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  5.635337e-08        
-24  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  1.470811e-07        
-25  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  7.059176e-08        
-26  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.215494e-07        
-27  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039462e+00        
-28  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.159572e-08        
-29  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039204e+00        
-30  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  9.641850e-08        
-31  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  9.015516e-08        
-32  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  1.534978e-07        
-33  0.527207   0.357968     1.0  310.0  1398.0  556.0    0.0  0.857728  5.174749e-08        
-34  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  1.730718e-07        
-35  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039386e+00        
-36  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.633623e-08        
-37  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.861773e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-25  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  7.059176e-08        
-26  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.215494e-07        
-27  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039462e+00        
-28  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.159572e-08        
-29  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039204e+00        
-30  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  9.641850e-08        
-31  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  9.015516e-08        
-32  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  1.534978e-07        
-33  0.527207   0.357968     1.0  310.0  1398.0  556.0    0.0  0.857728  5.174749e-08        
-34  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  1.730718e-07        
-35  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039386e+00        
-36  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.633623e-08        
-37  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.861773e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-28  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.159572e-08        
-29  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039204e+00        
-30  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  9.641850e-08        
-31  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  9.015516e-08        
-32  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  1.534978e-07        
-33  0.527207   0.357968     1.0  310.0  1398.0  556.0    0.0  0.857728  5.174749e-08        
-34  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  1.730718e-07        
-35  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039386e+00        
-36  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.633623e-08        
-37  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.861773e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-31  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  9.015516e-08        
-32  0.526312   0.357143     1.0  310.0  1396.0  558.0    0.0  0.857216  1.534978e-07        
-33  0.527207   0.357968     1.0  310.0  1398.0  556.0    0.0  0.857728  5.174749e-08        
-34  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  1.730718e-07        
-35  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039386e+00        
-36  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.633623e-08        
-37  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.861773e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-34  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  1.730718e-07        
-35  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039386e+00        
-36  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  5.633623e-08        
-37  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  1.861773e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-38  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.296708e-07        
-39  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039361e+00        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-40  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.656209e-07        
-41  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039222e+00        
-42  0.644486   0.475460     1.0  310.0  1612.0  342.0    0.0  0.912487  1.149900e-07        
-42  0.644486   0.475460     1.0  310.0  1612.0  342.0    0.0  0.912487  1.149900e-07        
-43  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039056e+00        
-43  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039056e+00        
-44  0.933730   0.875706     1.0  310.0  1910.0   44.0    0.0  0.988741  5.757226e-08        
-45  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039206e+00        
-46  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  2.048074e-07        
-47  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039010e+00        
-48  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  5.436020e-08        
-49  0.000000   0.000000     0.0    0.0  1954.0    0.0  310.0  0.500000  1.039131e+00        
-50  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  4.908850e-08        
-51  0.432354   0.275801     1.0  310.0  1140.0  814.0    0.0  0.791709  5.431258e-08        
-52  0.536328   0.366430     1.0  310.0  1418.0  536.0    0.0  0.862845  1.380809e-07        
-53  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  9.104026e-08        
-54  0.425821   0.270506     1.0  310.0  1118.0  836.0    0.0  0.786080  9.467901e-08        
-{'FN': 0,
- 'FP': 33,
- 'Hit@100%': 1.0,
- 'Hit@150%': 1.0,
- 'NDCG@100%': 1.0000000000000002,
- 'NDCG@150%': 1.0000000000000002,
- 'ROC/AUC': 0.9915557830092119,
- 'TN': 1921,
- 'TP': 310,
- 'f1': 0.9494589959667135,
- 'precision': 0.9037900611139924,
- 'recall': 0.9999999677419366,
- 'threshold': 0.03753480478835634}
+## Benchmark Scores
 
- SMAP
-           f1  precision    recall     TP      TN     FP     FN   ROC/AUC      threshold
-0   0.738042   0.743555  0.732620  548.0  7568.0  189.0  200.0  0.854128   7.126045e-01     
-1   0.905564   0.827434  1.000000  748.0  7601.0  156.0    0.0  0.989945   9.987175e-01     
-2   0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000   3.173895e+81     
-3   0.908865   0.832962  1.000000  748.0  7607.0  150.0    0.0  0.990331   9.990684e-01     
-4   0.821522   0.697111  1.000000  748.0  7432.0  325.0    0.0  0.979051   1.632727e-07     
-5   0.914980   0.843292  1.000000  748.0  7618.0  139.0    0.0  0.991040   9.973415e-01     
-6   0.911079   0.836689  1.000000  748.0  7611.0  146.0    0.0  0.990589   9.986420e-01     
-7   0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000   2.207585e+69     
-8   0.856320   0.748749  1.000000  748.0  7506.0  251.0    0.0  0.983821   5.175011e-07     
-9   0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000   4.345444e+59     
-10  0.477145   0.567219  0.411765  308.0  7522.0  235.0  440.0  0.690735   1.916195e-07     
-11  0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000   3.517306e+66     
-12  0.798288   0.664298  1.000000  748.0  7379.0  378.0    0.0  0.975635   1.257968e-07     
-13  0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000   6.722419e+69     
-14  0.849030   0.737673  1.000000  748.0  7491.0  266.0    0.0  0.982854   2.442871e-07     
-15  0.842812   0.728335  1.000000  748.0  7478.0  279.0    0.0  0.982016   3.096640e-07     
-16  0.418473   0.425414  0.411765  308.0  7341.0  416.0  440.0  0.679068   1.544496e-06     
-17  0.906662   0.829268  1.000000  748.0  7603.0  154.0    0.0  0.990073   9.987185e-01     
-18  0.903377   0.823789  1.000000  748.0  7597.0  160.0    0.0  0.989687   9.982868e-01     
-19  0.000000   0.000000  0.000000    0.0  7757.0    0.0  748.0  0.500000  1.615339e+127     
-20  0.412311   0.412869  0.411765  308.0  7319.0  438.0  440.0  0.677650   3.996120e-07     
-21  0.907212   0.830189  1.000000  748.0  7604.0  153.0    0.0  0.990138   9.981576e-01     
-22  0.905564   0.827434  1.000000  748.0  7601.0  156.0    0.0  0.989945   9.983756e-01     
-23  0.849512   0.738401  1.000000  748.0  7492.0  265.0    0.0  0.982919   2.476550e-07     
-24  0.836684   0.719231  1.000000  748.0  7465.0  292.0    0.0  0.981178   2.031312e-07     
-{'FN': 0,
- 'FP': 174,
- 'Hit@100%': 1.0,
- 'Hit@150%': 1.0,
- 'NDCG@100%': 1.0,
- 'NDCG@150%': 1.0,
- 'ROC/AUC': 0.9887843238365348,
- 'TN': 7583,
- 'TP': 748,
- 'f1': 0.8958034268120577,
- 'precision': 0.811279817665078,
- 'recall': 0.9999999866310163,
- 'threshold': 0.24662294266460735}
+![Benchmark Scores](assets/scores.png)
 
+## Mock images
 
-Creating new model: STP_TranAD
-Training STP_TranAD on synthetic
-Epoch 0,        Recon = 0.03775501784044422,    Forecast = 0.03523038086453041
-Epoch 1,        Recon = 0.09038971807328018,    Forecast = 0.02631335726285475
-Epoch 2,        Recon = 0.14145998534261842,    Forecast = 0.021513159704434598
-Epoch 3,        Recon = 0.17383314735978656,    Forecast = 0.013667854849795049
-Epoch 4,        Recon = 0.19533344032732566,    Forecast = 0.010296823254751624
-Epoch 5,        Recon = 0.21010977412744145,    Forecast = 0.010036719771828954
-Epoch 6,        Recon = 0.2188120280288904,     Forecast = 0.009891788596946298
-Epoch 7,        Recon = 0.20126809518893118,    Forecast = 0.009759439073515959
-Epoch 8,        Recon = 0.19944311860964553,    Forecast = 0.009594711638169098
-Epoch 9,        Recon = 0.19944641615767622,    Forecast = 0.009412292015565638
-100%|██████████████████████████████████████████████████████████████████████████| 10/10 [03:00<00:00, 18.07s/it]
-Training time:   180.6761 s
-Testing STP_TranAD on synthetic
-C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\numpy\lib\_function_base_impl.py:2922: RuntimeWarning: invalid value encountered in divide
-  c /= stddev[:, None]
-C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\numpy\lib\_function_base_impl.py:2923: RuntimeWarning: invalid value encountered in divide
-  c /= stddev[None, :]
-C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
-  warnings.warn(
-C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
-  warnings.warn(
-C:\Users\dhruv\anaconda3\envs\tranad\lib\site-packages\sklearn\metrics\_ranking.py:379: UndefinedMetricWarning: Only one class is present in y_true. ROC AUC score is not defined in that case.
-  warnings.warn(
-          f1  precision  recall     TP      TN    FP   FN   ROC/AUC  threshold
-0   0.948612   0.902256     1.0  120.0  9867.0  13.0  0.0  0.999342   3.263467
-1   0.794697   0.659341     1.0   60.0  9909.0  31.0  0.0  0.998441   2.860634
-2   0.933847   0.875912     1.0  120.0  9863.0  17.0  0.0  0.999140   2.988022
-3   0.895517   0.810811     1.0  120.0  9852.0  28.0  0.0  0.998583   3.237911
-4   0.805364   0.674157     1.0   60.0  9911.0  29.0  0.0  0.998541   3.087127
-5   0.912542   0.839161     1.0  120.0  9857.0  23.0  0.0  0.998836   3.176918
-6   0.863304   0.759494     1.0   60.0  9921.0  19.0  0.0  0.999044   3.254080
-7   0.845065   0.731707     1.0   60.0  9918.0  22.0  0.0  0.998893   2.975841
-8   0.794697   0.659341     1.0   60.0  9909.0  31.0  0.0  0.998441   3.098129
-9   0.935060   0.878049     1.0  180.0  9795.0  25.0  0.0  0.998727   3.260273
-10  0.895517   0.810811     1.0   60.0  9926.0  14.0  0.0  0.999296   3.189201
-11  0.731703   0.576923     1.0   60.0  9896.0  44.0  0.0  0.997787   3.055935
-12  0.952376   0.909091     1.0  120.0  9868.0  12.0  0.0  0.999393   3.455971
-13  0.000000   0.000000     0.0    0.0  9978.0  22.0  0.0       NaN   3.363313
-14  0.963850   0.930232     1.0  120.0  9871.0   9.0  0.0  0.999545   4.283867
-15  0.769226   0.625000     1.0   60.0  9904.0  36.0  0.0  0.998189   3.176737
-16  0.947363   0.900000     1.0  180.0  9800.0  20.0  0.0  0.998982   3.871148
-17  0.888884   0.800000     1.0   60.0  9925.0  15.0  0.0  0.999245   3.419870
-18  0.975605   0.952381     1.0   60.0  9937.0   3.0  0.0  0.999849   4.345913
-19  0.930227   0.869565     1.0   60.0  9931.0   9.0  0.0  0.999547   3.837048
-20  0.941171   0.888889     1.0  120.0  9865.0  15.0  0.0  0.999241   4.056583
-26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
-27  0.000000   0.000000     0.0    0.0  9983.0  17.0  0.0       NaN   4.131053
-26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
-26  0.902251   0.821918     1.0   60.0  9927.0  13.0  0.0  0.999346   3.974998
-27  0.000000   0.000000     0.0    0.0  9983.0  17.0  0.0       NaN   4.131053
-28  0.967737   0.937500     1.0  120.0  9872.0   8.0  0.0  0.999595   4.061369
-29  0.833328   0.714286     1.0   60.0  9916.0  24.0  0.0  0.998793   3.645196
-{'FN': np.int64(0),
- 'FP': np.int64(13),
- 'Hit@100%': np.float64(1.0),
- 'Hit@150%': np.float64(1.0),
- 'NDCG@100%': np.float64(0.9999999999999999),
- 'NDCG@150%': np.float64(0.9999999999999999),
- 'ROC/AUC': np.float64(0.9993172268907563),
- 'TN': np.int64(9507),
- 'TP': np.int64(480),
- 'f1': np.float64(0.9866342406580769),
- 'precision': np.float64(0.9736308118938984),
- 'recall': np.float64(0.9999999791666672),
- 'threshold': np.float64(3.0733723783346716)}
+<table>
+  <tr>
+    <td><img src="assets/home.png" alt="Image 1" width="200"/></td>
+    <td><img src="assets/dash1.png" alt="Image 2" width="200"/></td>
+  </tr>
+  <tr>
+    <td><img src="assets/dash2.png" alt="Image 3" width="200"/></td>
+    <td><img src="assets/dash3.png" alt="Image 4" width="200"/></td>
+  </tr>
+  <tr>
+    <td><img src="assets/chat.png" alt="Image 3" width="200"/></td>
+    <td><img src="assets/dash4.png" alt="Image 4" width="200"/></td>
+  </tr>
+</table>
 
+- A FastAPI backend for live ingest, scoring, governance, and model hot-swap.
+- A React dashboard for live monitoring, investigation, and source management.
+- Kafka-based streaming ingestion.
+- Optional InfluxDB persistence.
+- ESP32 telemetry integration through MQTT to Kafka bridging.
+- Synthetic dataset tooling for reproducible end-to-end testing.
+
+This README is the consolidated operational guide for the current project state.
+
+It covers both the latest ESP32 and source-management additions and the earlier foundational phases (Phase 1 through Phase 9) that introduced ingest hardening, fused scoring, explainability, governance, Influx persistence, RL suggestion loops, and guarded policy apply/rollback.
+
+---
+
+## 1) Repository Layout
+
+- `Frontend/`
+  - React + Vite dashboard UI.
+- `TranAD-main/`
+  - FastAPI backend, model runtime, streaming consumers/producers, bridge scripts, and training/testing pipeline.
+- `docker-compose.yml`
+  - Local infrastructure services (Kafka, optional InfluxDB).
+
+Important runtime files:
+
+- `TranAD-main/server.py`
+  - Main backend server and runtime state machine.
+- `TranAD-main/kafka_producer.py`
+  - Simulator producer to feed Kafka.
+- `TranAD-main/esp32_mqtt_kafka_bridge.py`
+  - MQTT subscriber + payload normalizer + Kafka publisher.
+- `TranAD-main/export_esp32_replay.py`
+  - Root launcher for ESP32 replay asset export.
+- `TranAD-main/scripts/export_esp32_replay.py`
+  - Generates ESP32 replay CSV/header/meta from synthetic arrays.
+- `TranAD-main/esp32/TranAD_ESP32_Replay/TranAD_ESP32_Replay.ino`
+  - ESP32 sketch for replay publishing.
+
+---
+
+## 2) What Has Been Implemented
+
+### 2.1 Dashboard and UX
+
+- Added a Data Sources tab in the frontend.
+- Added an ESP32 dataset tab in the dataset selector.
+- Added/maintained anomaly investigation UI flows.
+- Improved websocket lifecycle behavior across dataset switching.
+
+### 2.2 Backend Runtime and APIs
+
+- Source registry with persistence and source management APIs.
+- Dataset hot-swap endpoint with guardrails and rollback-safe behavior.
+- Runtime status endpoint with detailed ingest, scoring, Kafka, Influx, and feature flags.
+- Anomaly listing and detail APIs.
+- Policy and governance scaffolding (suggestions/events/feedback integration).
+
+### 2.3 Streaming and Reliability
+
+- Kafka consumer support enabled for live ingest.
+- Producer status polling hardened against timeout/network errors.
+- Better observability on ingest counters and drop reasons.
+
+### 2.4 ESP32 End-to-End Pipeline
+
+- `ESP32` dataset mode in backend (model/data alias to synthetic artifacts).
+- MQTT -> Kafka bridge with payload normalization and live counters.
+- ESP32 replay header export tooling.
+- ESP32 sketch that publishes expected JSON schema.
+- Runtime hardening:
+  - Safer ESP32 memory/buffer handling.
+  - MQTT broker failover support in sketch and bridge.
+  - Better diagnostics for no-message scenarios.
+
+### 2.5 Data and Validation Tooling
+
+- Synthetic pipeline dataset generation for system-level testing.
+- Optional InfluxDB write path and status reporting.
+- Backfill tooling for historical governance/feedback traces.
+
+### 2.6 Historical Phase Coverage (Phase 1 to Phase 9)
+
+- Phase 1: Ingestion reliability
+  - Timestamp ordering/skew checks, dimension guards, imputation fallback, outlier and degraded-mode accounting.
+- Phase 2: Fused scoring
+  - Reconstruction + forecast + correlation-shift component scoring, normalization, weighted fusion, dynamic thresholding.
+- Phase 3: Explainability and investigation
+  - Severity/confidence/anomaly-type shaping, contributors, similar-history hints, anomaly investigation APIs, frontend anomaly source tab.
+- Phase 4: Adaptive governance loop
+  - Operator feedback persistence, drift monitoring, retrain recommendation flow, guarded calibration with rollback protections.
+- Phase 5: InfluxDB runtime persistence
+  - Async queue writer, measurement emission, health/status visibility, dead-letter fallback.
+- Phase 6: Policy event alignment
+  - Recommendation, calibration, and retrain lifecycle events persisted into policy-oriented telemetry stream.
+- Phase 7: Historical backfill
+  - Backfill utility for SQLite feedback and checkpoint metadata into Influx measurements.
+- Phase 8: RL suggestion-only policy loop
+  - Suggest, reward, and stats APIs with persistent RL state and no automatic policy mutation.
+- Phase 9: Guarded manual apply and rollback
+  - Dry-run/canary/force apply modes, bounded guardrails, canary alert-rate checks, rollback, and policy history audit.
+
+---
+
+## 3) Prerequisites
+
+- Windows (commands below are PowerShell-first).
+- Conda environment with required Python dependencies.
+- Node.js for frontend.
+- Docker Desktop for Kafka/Influx/Mosquitto containers.
+
+Recommended Python environment activation:
+
+```powershell
+conda activate tranad
+```
+
+Install backend dependencies:
+
+```powershell
+Set-Location TranAD-main
+pip install -r requirements.txt
+```
+
+Install frontend dependencies:
+
+```powershell
+Set-Location ..\Frontend
+npm install
+```
+
+---
+
+## 4) Quick Start (Local Full Stack)
+
+From repository root:
+
+### 4.1 Start Infrastructure
+
+```powershell
+docker compose up -d kafka
+```
+
+Optional InfluxDB:
+
+```powershell
+docker compose up -d influxdb
+```
+
+Optional local MQTT broker for ESP32 path:
+
+```powershell
+docker run -d --name catch-mosquitto -p 1883:1883 eclipse-mosquitto:2
+```
+
+### 4.2 Start Backend
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
 $env:KAFKA_CONSUMER_ENABLED="true"
 $env:KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:29092"
 $env:KAFKA_TOPIC="telemetry-stream"
 python .\server.py
+```
 
-set INFLUX_ENABLED=true
-set INFLUX_URL=http://127.0.0.1:8086
-set INFLUX_TOKEN=catch-dev-token
-set INFLUX_ORG=catch-org
-set INFLUX_BUCKET=catch-telemetry
-python server.py
+Optional Influx-enabled backend:
+
+```powershell
+$env:INFLUX_ENABLED="true"
+$env:INFLUX_URL="http://127.0.0.1:8086"
+$env:INFLUX_TOKEN="catch-dev-token"
+$env:INFLUX_ORG="catch-org"
+$env:INFLUX_BUCKET="catch-telemetry"
+python .\server.py
+```
+
+### 4.3 Start Frontend
+
+```powershell
+Set-Location ..\Frontend
+npm run dev
+```
+
+### 4.4 Start Kafka Simulator (Optional)
+
+```powershell
+Set-Location ..\TranAD-main
+conda activate tranad
+python .\kafka_producer.py --dataset synthetic --topic telemetry-stream --hz 2 --loop
+```
+
+---
+
+## 5) Core Operational APIs
+
+Base URL: `http://127.0.0.1:8000`
+
+Core streaming endpoints:
+
+- `POST /ingest`
+- `WS /ws/stream`
+- `GET /status`
+- `POST /change_dataset`
+- `POST /calibrate`
+
+- `GET /sources`
+  - List configured source profiles.
+- `POST /sources`
+  - Create source profile.
+- `PATCH /sources/{source_id}`
+  - Update source profile and active behavior.
+- `GET /sources/{source_id}/health`
+  - Source health and ingest quality snapshot.
+- `POST /sources/{source_id}/mapping/validate`
+  - Validate timestamp/vector path mapping against sample payload.
+- `GET /anomalies`
+- `GET /anomalies/{anomaly_id}`
+
+Governance endpoints:
+
+- `POST /feedback`
+- `GET /feedback/summary`
+- `GET /retrain/plan`
+- `POST /retrain/mark_applied`
+
+RL and policy-control endpoints (feature-gated):
+
+- `GET /policy/suggest`
+- `POST /policy/reward`
+- `GET /policy/stats`
+- `POST /policy/apply`
+- `POST /policy/rollback`
+- `GET /policy/history`
+
+Example dataset switch:
+
+```powershell
+$body = @{ dataset = 'ESP32' } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/change_dataset" -Method Post -ContentType "application/json" -Body $body
+```
+
+Optional HTTP simulator ingest path (instead of Kafka producer):
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
+python .\kafka_simulator.py
+```
+
+---
+
+## 6) ESP32 Integration Runbook
+
+### 6.1 Configure Backend Runtime for ESP32
+
+Set active runtime dataset to ESP32:
+
+```powershell
+$body = @{ dataset = 'ESP32' } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/change_dataset" -Method Post -ContentType "application/json" -Body $body
+```
+
+Ensure active source profile matches 64-dim ESP32 payloads:
+
+```powershell
+$patch = @{
+  dataset = 'ESP32'
+  expected_dimensions = 64
+  protocol = 'kafka'
+  endpoint = '127.0.0.1:29092'
+  topic = 'telemetry-stream'
+} | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/sources/1" -Method Patch -ContentType "application/json" -Body $patch
+```
+
+### 6.2 Export Replay Assets for Firmware
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
+python .\export_esp32_replay.py --frames 512 --channels 64 --step-ms 500
+```
+
+Artifacts written under `TranAD-main/data/synthetic/`:
+
+- `esp32_replay.csv`
+- `esp32_replay.h`
+- `esp32_replay_meta.json`
+
+Copy `esp32_replay.h` into:
+
+- `TranAD-main/esp32/TranAD_ESP32_Replay/`
+
+### 6.3 Flash ESP32 Sketch
+
+Sketch file:
+
+- `TranAD-main/esp32/TranAD_ESP32_Replay/TranAD_ESP32_Replay.ino`
+
+Set Wi-Fi and MQTT values in sketch config before uploading.
+
+### 6.4 Run MQTT -> Kafka Bridge
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
+python .\esp32_mqtt_kafka_bridge.py --mqtt-host 127.0.0.1 --mqtt-hosts 127.0.0.1,broker.hivemq.com --mqtt-port 1883 --mqtt-topic esp32/telemetry --kafka-bootstrap-servers 127.0.0.1:29092 --kafka-topic telemetry-stream --dataset ESP32 --expected-dimensions 64
+```
+
+Bridge behavior includes:
+
+- Live counters (`mqtt`, `parse_errors`, `invalid`, `kafka_published`).
+- Diagnostic hints when connected but no MQTT messages are received.
+- Optional host failover if no traffic is observed for configured duration.
+
+### 6.5 Expected Telemetry Schema
+
+```json
+{
+  "timestamp_ms": 1710000000000,
+  "source_id": "esp32-001",
+  "seq_id": 1,
+  "sensors": [0.1, 0.2, 0.3]
+}
+```
+
+---
+
+## 7) Synthetic Data and Model Workflows
+
+### 7.1 Generate Synthetic Pipeline Dataset
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
+python .\generate_synthetic_pipeline_dataset.py --signals 64 --train-steps 12000 --test-steps 6000 --seed 77 --write-checkpoint
+```
+
+### 7.2 Train/Test via Main Entry
+
+```powershell
+Set-Location TranAD-main
+conda activate tranad
+python .\main.py --model TranAD --dataset SMD --retrain
+```
+
+Supported datasets include: `SMD`, `MSL`, `SMAP`, `synthetic` (and project-specific runtime alias `ESP32` for serving).
+
+---
+
+## 8) Troubleshooting Guide
+
+### 8.1 Dashboard Shows No Waves/Data
+
+Check in order:
+
+1. `GET /status` and verify:
+   - `active_dataset` matches current stream.
+   - `ingest.totals.accepted` is increasing.
+   - `kafka.connected` is true.
+2. If Kafka `received_count` rises but `accepted` does not:
+   - You likely have a dimension mismatch.
+   - Align runtime dataset and source expected dimensions.
+3. Frontend must be on the intended dataset tab (for ESP32, select ESP32).
+
+### 8.2 ESP32 Connected but Bridge Shows `mqtt=0`
+
+- Confirm sketch broker host/port and topic exactly match bridge subscription.
+- Confirm local MQTT broker is reachable from device network.
+- On Windows, allow inbound TCP 1883 on private network if using local broker.
+- Use bridge failover hosts or public broker fallback for quick isolation.
+
+### 8.3 Frequent Dimension Mismatch Drops
+
+- Check `GET /status`:
+  - `dimensions` is model expectation.
+- Check `GET /sources` active source:
+  - `expected_dimensions` should match payload length.
+- For ESP32 flow, use 64 dimensions consistently.
+
+### 8.4 Backend Startup with Kafka But No Ingest
+
+Ensure env vars are set in same shell where server is launched:
+
+- `KAFKA_CONSUMER_ENABLED=true`
+- `KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:29092`
+- `KAFKA_TOPIC=telemetry-stream`
+
+---
+
+## 9) Feature Flags and Governance Notes
+
+Feature flags exposed via backend status and frontend build/runtime include:
+
+- Anomaly source tab enablement.
+- RL policy suggestion enablement.
+
+Governance-oriented runtime includes:
+
+- Policy suggestion scaffolding.
+- Feedback summary support.
+- Drift/retraining recommendation state tracking.
+
+Policy safety model:
+
+- RL suggestions do not auto-apply runtime threshold changes.
+- Apply requires explicit operator action through policy apply APIs.
+- Guardrails constrain policy deltas.
+- Canary validation checks alert-rate shift before committing policy.
+- Rollback restores previous policy snapshot and records audit history.
+
+---
+
+## 10) Known Operational Caveats
+
+- Dataset mismatch is the most common reason for zero graphs even when streams are active.
+- ESP32 + local broker often fails due to LAN/firewall constraints, not model/runtime code.
+- IDE diagnostics for Arduino includes are expected unless Arduino toolchain include paths are configured in that IDE context.
+
+---
+
+## 11) Recommended Daily Ops Checklist
+
+1. Start Kafka (and optional Influx/MQTT).
+2. Start backend with Kafka env vars.
+3. Confirm `GET /status` healthy baseline.
+4. Select and confirm active dataset.
+5. Ensure source profile expected dimensions match payload.
+6. Start producer/bridge/device.
+7. Watch `accepted` and `source health` while monitoring dashboard.
+
+---
+
+## 12) License and Attribution
+
+Base TranAD implementation and paper attribution remain in `TranAD-main/`.
+Please keep original licensing and citations from upstream TranAD where applicable.
+
+---
+
+## 13) Runtime Topology and Lifecycle (Historical + Current)
+
+Infrastructure layer:
+
+- Kafka broker for stream transport.
+- InfluxDB for optional observability persistence.
+- Optional MQTT broker for ESP32 ingress path.
+
+Application layer:
+
+- Backend service in `TranAD-main/server.py`.
+- Frontend dashboard in `Frontend/`.
+- Producers via HTTP simulator, Kafka producer, or ESP32 through MQTT bridge.
+
+Lifecycle summary:
+
+1. Start infrastructure services.
+2. Backend startup initializes feedback DB, model runtime, ingestion state, governance loop, and optional Kafka/Influx/RL tasks.
+3. Data arrives through HTTP ingest or Kafka consumer, then converges into the same ingestion sanitizer pipeline.
+4. Websocket inference loop computes fused score and anomaly payloads for dashboard rendering.
+5. Operator feedback/governance actions update state and optionally emit persistent policy/feedback events.
+
+---
+
+## 14) Configuration Groups
+
+Key environment variable groups used across phases:
+
+- Ingest reliability: INGEST_* variables
+- Fused scoring behavior: FUSED_* variables
+- Governance and retraining: DRIFT_*, RETRAIN_*, CALIBRATE_*
+- Kafka integration: KAFKA_*
+- Influx integration: INFLUX_*
+- Feature flags: FEATURE_ANOMALY_SOURCE_TAB, FEATURE_RL_POLICY_SUGGESTIONS
+- RL tuning: RL_POLICY_*
+- Guarded apply and canary controls: POLICY_APPLY_*, POLICY_CANARY_*
+
+---
+
+## 15) Verification Checklist
+
+Use this checklist to validate the full implementation envelope:
+
+1. Live stream updates appear over websocket and dashboard charts move.
+2. Dataset switch works without shape crashes and status dimensions align with payload dimensions.
+3. Feedback actions persist and status counters reflect events.
+4. Retrain recommendation and mark-applied lifecycle behave as expected.
+5. Influx measurements increase for anomaly, ingest quality, feedback, drift, and policy events (when enabled).
+6. Backfill script runs successfully and verification counts are consistent.
+7. RL flow works in sequence: suggest -> reward -> stats.
+8. Policy apply flow works: dry-run validation, canary or force apply, rollback, and history visibility.
+
+---
+
+## 16) Major Cross-Phase Files
+
+- `TranAD-main/server.py`
+- `TranAD-main/src/rl_policy_manager.py`
+- `TranAD-main/scripts/backfill_influxdb.py`
+- `TranAD-main/kafka_simulator.py`
+- `TranAD-main/kafka_producer.py`
+- `TranAD-main/esp32_mqtt_kafka_bridge.py`
+- `TranAD-main/esp32/TranAD_ESP32_Replay/TranAD_ESP32_Replay.ino`
+- `TranAD-main/README.md`
+- `docker-compose.yml`
+- `Frontend/src/App.tsx`
+- `Frontend/src/components/AnomalySourceTab.tsx`

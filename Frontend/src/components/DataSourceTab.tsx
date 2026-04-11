@@ -81,11 +81,11 @@ const palette = {
 
 const defaultForm = (): SourceForm => ({
   name: '',
-  protocol: 'kafka',
-  endpoint: '127.0.0.1:29092',
-  topic: 'telemetry-stream',
-  dataset: 'SMD',
-  expectedDimensions: '',
+  protocol: 'mqtt',
+  endpoint: '127.0.0.1:1883',
+  topic: 'esp32/telemetry',
+  dataset: 'ESP32',
+  expectedDimensions: '64',
   enabled: true,
   isActive: false,
   notes: '',
@@ -364,6 +364,7 @@ export default function DataSourceTab() {
                 <option value="SMD">SMD</option>
                 <option value="MSL">MSL</option>
                 <option value="SMAP">SMAP</option>
+                <option value="ESP32">ESP32</option>
                 <option value="synthetic">Synthetic</option>
               </select>
             </label>

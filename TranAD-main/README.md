@@ -80,6 +80,101 @@ Use it with simulator/producer by switching dataset to `synthetic` from the UI (
 python kafka_producer.py --dataset synthetic --topic telemetry-stream --hz 2 --loop
 ```
 
+## ESP32 Integration (Synthetic Checkpoint Reuse)
+The project now supports an `ESP32` dataset mode that reuses the synthetic checkpoint for prediction. This is intended for hardware-in-the-loop demos where an ESP32 publishes 50+ channel frames.
+
+### 1) Enable ESP32 dataset mode
+- Dashboard now includes an `ESP32` dataset tab.
+- Backend dataset switching accepts `ESP32` and aliases model loading/checkpoint to synthetic artifacts.
+
+Switch dataset to ESP32:
+```bash
+curl -X POST http://127.0.0.1:8000/change_dataset \
+  -H "Content-Type: application/json" \
+  -d '{"dataset":"ESP32"}'
+```
+
+### 2) Export synthetic replay data for ESP32
+Generate an ESP32-friendly replay bundle from `processed/synthetic/test.npy`:
+```bash
+python scripts/export_esp32_replay.py --frames 512 --channels 64 --step-ms 500
+```
+
+You can also run the root launcher (same output):
+```bash
+python export_esp32_replay.py --frames 512 --channels 64 --step-ms 500
+```
+
+Outputs:
+- `data/synthetic/esp32_replay.csv` (CSV with timestamp + channels)
+- `data/synthetic/esp32_replay.h` (PROGMEM-ready quantized int16 table)
+- `data/synthetic/esp32_replay_meta.json`
+
+The generated header includes channel scales/offsets for dequantization on device:
+- `value = q * scale[ch] + offset[ch]`
+
+### 2.1) Arduino sketch (header replay publisher)
+Sketch path:
+- `esp32/TranAD_ESP32_Replay/TranAD_ESP32_Replay.ino`
+
+Usage:
+1. Generate replay header using step 2.
+2. Copy `data/synthetic/esp32_replay.h` into `esp32/TranAD_ESP32_Replay/`.
+3. Open sketch in Arduino IDE.
+4. Install libraries:
+   - `PubSubClient`
+   - `ArduinoJson`
+5. Set WiFi + broker values at top of sketch.
+6. Flash to ESP32 and monitor serial logs.
+
+Published MQTT schema (exact):
+```json
+{
+  "timestamp_ms": 1710000000000,
+  "source_id": "esp32-001",
+  "seq_id": 1,
+  "sensors": [0.1, 0.2, 0.3]
+}
+```
+
+### 3) Run MQTT -> Kafka bridge
+If your ESP32 publishes MQTT telemetry, run the bridge to feed Kafka:
+```bash
+python esp32_mqtt_kafka_bridge.py \
+  --mqtt-host 127.0.0.1 \
+  --mqtt-port 1883 \
+  --mqtt-topic esp32/telemetry \
+  --kafka-bootstrap-servers 127.0.0.1:29092 \
+  --kafka-topic telemetry-stream \
+  --dataset ESP32 \
+  --expected-dimensions 64
+```
+
+Expected MQTT payload shape:
+```json
+{
+  "timestamp_ms": 1710000000000,
+  "sensors": [0.1, 0.2, 0.3],
+  "source_id": "esp32-001",
+  "seq_id": 1
+}
+```
+
+Notes:
+- `sensors` must be fixed-width and match active model dimensions (64 by default in this flow).
+- If dimensions mismatch, messages are dropped by ingest guards.
+
+### 4) Validate runtime state
+```bash
+curl http://127.0.0.1:8000/status
+```
+
+Check:
+- `active_dataset` is `ESP32`
+- `ingest.totals.accepted` increases
+- `ingest.totals.dropped_dimension_mismatch` stays at `0`
+
+
 ## Phase 1 Rollout Flags (Non-Breaking)
 Phase 1 introduces gated feature flags so we can ship incrementally without breaking existing clients.
 
