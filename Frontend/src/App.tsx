@@ -401,6 +401,7 @@ import AnomalySourceTab from './components/AnomalySourceTab';
 import DataSourceTab from './components/DataSourceTab';
 import LandingPage from './LandingPage';
 import AIChatPage from './AIChatPage';
+import ChatbotPopup from './components/ChatbotPopup';
 
 interface AlertExplanation {
   severity_score: number;
@@ -936,6 +937,14 @@ export default function App() {
 
         </div>
       )}
+
+      {/* ── Floating Chatbot Popup ── */}
+      <ChatbotPopup
+        systemState={systemState}
+        activeDataset={activeDataset}
+        alertExplanation={alertExplanation}
+        currentMetrics={data.length ? data[data.length - 1] : null}
+      />
     </div>
   );
 }
