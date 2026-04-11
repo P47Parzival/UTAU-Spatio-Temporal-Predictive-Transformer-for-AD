@@ -770,6 +770,25 @@ export default function App() {
     }
   };
 
+  const triggerManualAnomaly = async () => {
+    setFeedbackStatus('');
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/anomaly/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticks: 1, reason: 'dashboard test trigger' }),
+      });
+      if (!res.ok) {
+        setFeedbackStatus(`Manual anomaly trigger failed: ${res.status}`);
+        return;
+      }
+      const result = await res.json();
+      setFeedbackStatus(`Manual anomaly armed (${result.pending_ticks} tick pending).`);
+    } catch {
+      setFeedbackStatus('Could not reach server for manual anomaly trigger.');
+    }
+  };
+
   const changeDataset = async (ds: string) => {
     if (ds === activeDataset) return;
     setIsTransitioning(true);
@@ -911,6 +930,7 @@ export default function App() {
               modelVersion={modelVersion}
               retrainRecommended={retrainRecommended}
               onManualRetrain={triggerManualRetrain}
+              onTriggerAnomaly={triggerManualAnomaly}
             />
           </div>
 

@@ -139,7 +139,7 @@
 
 
 import { useEffect, useRef, useState } from 'react';
-import { Target, HardDrive, Clock, Shield, Check, AlertTriangle, RefreshCw, Cpu } from 'lucide-react';
+import { Target, HardDrive, Clock, Shield, Check, AlertTriangle, RefreshCw, Cpu, Zap } from 'lucide-react';
 
 const G  = 'var(--gold)'; const CU = 'var(--copper)'; const CR = 'var(--crimson)'; const VI = 'var(--teal)';
 const TP = 'var(--text-primary)'; const TS = 'var(--text-secondary)'; const TD = 'var(--text-dim)';
@@ -262,7 +262,7 @@ export function SimilarIncidents({ alertExplanation }: { alertExplanation: Alert
 export function GovernancePanel({
   systemState, isSubmitting, feedbackStatus,
   onAcknowledge, onDismiss,
-  modelVersion, retrainRecommended, onManualRetrain,
+  modelVersion, retrainRecommended, onManualRetrain, onTriggerAnomaly,
 }: {
   systemState: SysState;
   isSubmitting: boolean;
@@ -273,9 +273,11 @@ export function GovernancePanel({
   modelVersion?: string;
   retrainRecommended?: boolean;
   onManualRetrain?: () => void;
+  onTriggerAnomaly?: () => void;
 }) {
   const isHealthy = systemState === 'HEALTHY';
   const [isRetraining, setIsRetraining] = useState(false);
+  const [isTriggeringAnomaly, setIsTriggeringAnomaly] = useState(false);
   const retrainResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -301,6 +303,16 @@ export function GovernancePanel({
         setIsRetraining(false);
         retrainResetTimerRef.current = null;
       }, 3000);
+    }
+  };
+
+  const handleTriggerAnomaly = async () => {
+    if (!onTriggerAnomaly || isTriggeringAnomaly) return;
+    setIsTriggeringAnomaly(true);
+    try {
+      await onTriggerAnomaly();
+    } finally {
+      setIsTriggeringAnomaly(false);
     }
   };
 
@@ -360,6 +372,26 @@ export function GovernancePanel({
             <AlertTriangle size={11} /> DISMISS &amp; CALIBRATE
           </div>
         </button>
+
+        {onTriggerAnomaly && (
+          <button
+            onClick={handleTriggerAnomaly}
+            disabled={isTriggeringAnomaly}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              padding: '6px 10px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+              fontFamily: "'Cinzel', serif", letterSpacing: '0.12em', cursor: isTriggeringAnomaly ? 'not-allowed' : 'pointer',
+              border: `1px solid ${CR}60`,
+              background: isTriggeringAnomaly ? `${CR}18` : `${CR}0d`,
+              color: isTriggeringAnomaly ? TD : CR,
+              transition: 'background 0.2s, color 0.2s',
+              opacity: isTriggeringAnomaly ? 0.7 : 1,
+            }}
+          >
+            <Zap size={10} />
+            {isTriggeringAnomaly ? 'TRIGGERING…' : 'TRIGGER TEST ANOMALY'}
+          </button>
+        )}
 
         {/* Manual retrain — always shown; disabled while a retrain is running */}
         {onManualRetrain && (

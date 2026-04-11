@@ -250,6 +250,11 @@ retrain_state = {
     "last_recommendation_ts": 0.0,
     "last_applied_ts": 0.0,
 }
+manual_anomaly_state = {
+    "pending_ticks": 0,
+    "last_trigger_ts": 0.0,
+    "last_reason": "",
+}
 model_registry = {
     "dataset": DATASET,
     "model_version": "default",
@@ -320,6 +325,10 @@ class FeedbackPayload(BaseModel):
 class RetrainAppliedPayload(BaseModel):
     model_version: Optional[str] = None
     note: Optional[str] = None
+
+class ManualAnomalyTriggerPayload(BaseModel):
+    ticks: int = Field(default=1, ge=1, le=20)
+    reason: Optional[str] = None
 
 class RLRewardPayload(BaseModel):
     suggestion_id: str
@@ -2533,6 +2542,7 @@ async def get_status():
         "governance": {
             "drift": drift_state,
             "retraining": retrain_state,
+            "manual_anomaly": manual_anomaly_state,
             "model_registry": model_registry,
             "feedback": feedback_counters,
         },
@@ -3110,6 +3120,19 @@ async def trigger_manual_retrain(note: Optional[str] = None):
         "feedback_totals": feedback_counters,
     }
 
+@app.post("/api/anomaly/trigger")
+async def trigger_manual_anomaly(payload: ManualAnomalyTriggerPayload):
+    requested_ticks = int(payload.ticks)
+    manual_anomaly_state["pending_ticks"] = max(int(manual_anomaly_state.get("pending_ticks", 0)), requested_ticks)
+    manual_anomaly_state["last_trigger_ts"] = time.time()
+    manual_anomaly_state["last_reason"] = (payload.reason or "").strip()[:200]
+
+    return {
+        "status": "manual_anomaly_armed",
+        "pending_ticks": int(manual_anomaly_state["pending_ticks"]),
+        "reason": manual_anomaly_state["last_reason"],
+    }
+
 @app.get("/feedback/summary")
 async def feedback_summary(limit: int = 20):
     capped_limit = max(1, min(100, int(limit)))
@@ -3480,8 +3503,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     predicted_ttf_ticks = max(1, int((critical_threshold - float(fused_score)) / slope))
 
             is_anomalous = fused_score > fused_threshold
+            manual_override_active = False
+            manual_override_reason = ""
+            if int(manual_anomaly_state.get("pending_ticks", 0)) > 0:
+                manual_override_active = True
+                manual_override_reason = str(manual_anomaly_state.get("last_reason", ""))
+                manual_anomaly_state["pending_ticks"] = max(0, int(manual_anomaly_state["pending_ticks"]) - 1)
+                fused_score = float(max(fused_score, fused_threshold * 1.35))
+                is_anomalous = True
+                rul_status = "MANUAL TEST ANOMALY TRIGGERED"
             
-            if is_anomalous:
+            if is_anomalous and not manual_override_active:
                 if degradation_velocity > 0.005:
                     rul_status = f"IMPEDING FAILURE! Velocity {degradation_velocity:.3f}. RUL: ~{predicted_ttf_ticks} ticks (mins)."
                 elif degradation_velocity > 0.0001:
@@ -3500,9 +3532,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_score_meta["forecast_score"],
                 last_score_meta["corr_score"],
             )
+            if manual_override_active:
+                anomaly_type = "manual_test_anomaly"
+                severity_score = max(int(severity_score), 95)
+                severity_level = "critical"
+                confidence = max(float(confidence), 0.99)
             top_contributors, blended_vec = _rank_contributors(recon_loss, forecast_loss, top_k=5)
             similar_history = _get_similar_history(blended_vec, top_k=3)
             hints = _investigation_hints(anomaly_type, top_contributors, last_score_meta["corr_score"])
+            if manual_override_active:
+                lead_hint = "Manual anomaly trigger activated for tester validation."
+                if manual_override_reason:
+                    lead_hint += f" Reason: {manual_override_reason}"
+                hints = [lead_hint, *hints]
 
             recent_alert_history.append({
                 "tick": current_tick,
@@ -3559,6 +3601,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "severity_level": severity_level,
                     "confidence": confidence,
                     "anomaly_type": anomaly_type,
+                    "manual_trigger": manual_override_active,
+                    "manual_trigger_reason": manual_override_reason,
                     "duration_steps": anomaly_streak,
                     "top_contributors": top_contributors,
                     "historical_similar": similar_history,
@@ -3611,17 +3655,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 payload["anomaly_source"] = anomaly_source_info
 
             if is_anomalous:
-                # 📲 Fire real-world WhatsApp pager alert (non-blocking)
-                asyncio.create_task(_send_whatsapp_alert(
-                    anomaly_type=anomaly_type,
-                    severity_level=severity_level,
-                    confidence=confidence,
-                    top_sensor=top_contributors[0]["sensor"] if top_contributors else "unknown",
-                    fused_score=fused_score,
-                    threshold=fused_threshold,
-                    tick=current_tick,
-                    dataset=DATASET,
-                ))
+                # Avoid paging real operators for tester-triggered anomalies.
+                if not manual_override_active:
+                    asyncio.create_task(_send_whatsapp_alert(
+                        anomaly_type=anomaly_type,
+                        severity_level=severity_level,
+                        confidence=confidence,
+                        top_sensor=top_contributors[0]["sensor"] if top_contributors else "unknown",
+                        fused_score=fused_score,
+                        threshold=fused_threshold,
+                        tick=current_tick,
+                        dataset=DATASET,
+                    ))
                 _record_anomaly_event(
                     tick=current_tick,
                     fused_score=fused_score,
