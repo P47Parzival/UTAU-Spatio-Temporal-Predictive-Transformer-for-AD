@@ -65,6 +65,7 @@ export default function App() {
 // Custom Visual Notifications
   const [anomalyPopup, setAnomalyPopup] = useState<{ show: boolean; msg: string; dataset: string }>({ show: false, msg: '', dataset: '' });
   const hasAlertedRef = useRef(false);
+  const anomalyPopupTimerRef = useRef<number | null>(null);
 
   const generatePDFReport = async () => {
     try {
@@ -178,7 +179,10 @@ export default function App() {
             const type = payload.alert_explanation?.anomaly_type || 'unauthorized_deviation';
             setAnomalyPopup({ show: true, msg: `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`, dataset: activeDataset });
             // Auto-dismiss after 4 seconds
-            setTimeout(() => {
+            if (anomalyPopupTimerRef.current !== null) {
+              window.clearTimeout(anomalyPopupTimerRef.current);
+            }
+            anomalyPopupTimerRef.current = window.setTimeout(() => {
               setAnomalyPopup(prev => ({ ...prev, show: false }));
             }, 4000);
           }
@@ -200,6 +204,10 @@ export default function App() {
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (anomalyPopupTimerRef.current !== null) {
+        window.clearTimeout(anomalyPopupTimerRef.current);
+        anomalyPopupTimerRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();

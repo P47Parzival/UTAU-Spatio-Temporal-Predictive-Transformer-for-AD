@@ -27,6 +27,9 @@ static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 static const uint32_t PUBLISH_INTERVAL_MS = 500;
 
 // ===================== Runtime =====================
+const int LED_PIN = 2;
+bool ledState = false;
+
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
@@ -206,6 +209,9 @@ bool publishFrame() {
     Serial.println(ESP32_REPLAY_CHANNELS);
   }
 
+  ledState = !ledState;
+  digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+
   seqId += 1ULL;
   frameIndex = (frameIndex + 1U) % (uint32_t)ESP32_REPLAY_FRAMES;
   return true;
@@ -214,6 +220,9 @@ bool publishFrame() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   Serial.println("[ESP32] boot");
   Serial.print("[ESP32] primary broker=");

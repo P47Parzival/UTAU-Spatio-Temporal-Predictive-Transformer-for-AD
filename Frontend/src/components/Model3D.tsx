@@ -1,5 +1,5 @@
 // Model3D — Generic GLB viewer with reactive glow, rotation, and ring shadow
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
@@ -47,6 +47,21 @@ function Scene({
     if (maxDim > 0) s.scale.setScalar(1.6 / maxDim);
     return s;
   }, [scene, glowColor, emissiveIntensity]);
+
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.geometry?.dispose();
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((mat) => mat.dispose());
+        } else {
+          mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
@@ -110,8 +125,9 @@ export default function Model3D({
   return (
     <div style={style}>
       <Canvas
+        dpr={[1, 1.5]}
         camera={{ position: [0, 1, cameraZ], fov: 42 }}
-        gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}
+        gl={{ antialias: true, alpha: true, preserveDrawingBuffer: false }}
         style={{ background: 'transparent' }}
       >
         <ambientLight intensity={1.0} />
