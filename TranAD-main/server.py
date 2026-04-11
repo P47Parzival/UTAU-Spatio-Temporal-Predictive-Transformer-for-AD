@@ -9,6 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from collections import deque
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import gc
 import time
 import math
@@ -86,6 +89,14 @@ CALIBRATE_FINETUNE_STEPS = int(os.getenv("CALIBRATE_FINETUNE_STEPS", "6"))
 CALIBRATE_PATIENCE = int(os.getenv("CALIBRATE_PATIENCE", "4"))
 CALIBRATE_TOL = float(os.getenv("CALIBRATE_TOL", "1e-4"))
 CALIBRATE_MAX_SAMPLES = int(os.getenv("CALIBRATE_MAX_SAMPLES", "48"))
+
+# ── Twilio WhatsApp Pager Alert ──────────────────────────────────────────
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_WHATSAPP = os.getenv("TWILIO_FROM_WHATSAPP", "whatsapp:+14155238886")
+TWILIO_TO_NUMBERS    = [n.strip() for n in os.getenv("TWILIO_TO_WHATSAPP", "").split(",") if n.strip()]
+TWILIO_COOLDOWN      = int(os.getenv("TWILIO_ALERT_COOLDOWN_SEC", "30"))
+TWILIO_MIN_SEV       = os.getenv("TWILIO_MIN_SEVERITY", "warning")  # info | warning | critical
 
 # Kafka streaming controls
 KAFKA_CONSUMER_ENABLED = _env_flag("KAFKA_CONSUMER_ENABLED", "true")
@@ -190,6 +201,7 @@ governance_task = None
 kafka_consumer_task = None
 influx_writer_task = None
 influx_queue = None
+_twilio_last_sent_ts: float = 0.0  # cooldown tracker for WhatsApp alerts
 rl_policy_manager = None
 rl_policy_last_suggestion = None
 feedback_counters = {
@@ -1773,6 +1785,65 @@ def init_model(target_ds=None):
     _update_model_registry(target_ds, model_version, ckpt_path)
     return m, opt, feats
 
+async def _send_whatsapp_alert(
+    anomaly_type: str,
+    severity_level: str,
+    confidence: float,
+    top_sensor: str,
+    fused_score: float,
+    threshold: float,
+    tick: int,
+    dataset: str,
+):
+    """Fire a WhatsApp alert via Twilio. Silently no-ops if not configured."""
+    global _twilio_last_sent_ts
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_TO_NUMBERS:
+        return  # not configured — skip silently
+
+    now = time.time()
+    if now - _twilio_last_sent_ts < TWILIO_COOLDOWN:
+        return  # cooldown active — skip to avoid spam
+
+    sev_order = {"info": 0, "warning": 1, "critical": 2}
+    if sev_order.get(severity_level, 0) < sev_order.get(TWILIO_MIN_SEV, 1):
+        return  # below configured minimum severity
+
+    _twilio_last_sent_ts = now
+    emoji = "\U0001f6a8" if severity_level == "critical" else "\u26a0\ufe0f"
+    timestamp = time.strftime("%I:%M %p", time.localtime())
+
+    body = (
+        f"{emoji} UTAU-IIoT ALERT\n\n"
+        f"Dataset:    {dataset}\n"
+        f"Severity:   {severity_level.upper()}\n"
+        f"Type:       {anomaly_type}\n"
+        f"Sensor:     {top_sensor}\n"
+        f"Confidence: {confidence * 100:.1f}%\n"
+        f"Score:      {fused_score:.4f} (thresh {threshold:.4f})\n"
+        f"Tick:       {tick} | {timestamp}\n\n"
+        f"Autonomic canary rollback initiated."
+    )
+
+    def _send_sync():
+        try:
+            from twilio.rest import Client
+            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            for to_number in TWILIO_TO_NUMBERS:
+                try:
+                    msg = client.messages.create(
+                        from_=TWILIO_FROM_WHATSAPP,
+                        to=to_number,
+                        body=body,
+                    )
+                    print(f"[TWILIO] Alert sent to {to_number}: {msg.sid}")
+                except Exception as exc:
+                    print(f"[TWILIO] Failed to send to {to_number}: {exc}")
+        except ImportError:
+            print("[TWILIO] twilio package not installed. Run: pip install twilio")
+
+    await asyncio.to_thread(_send_sync)
+
+
 async def _governance_monitor_loop():
     while True:
         await asyncio.sleep(DRIFT_MONITOR_INTERVAL_SEC)
@@ -2852,6 +2923,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 payload["anomaly_source"] = anomaly_source_info
 
             if is_anomalous:
+                # 📲 Fire real-world WhatsApp pager alert (non-blocking)
+                asyncio.create_task(_send_whatsapp_alert(
+                    anomaly_type=anomaly_type,
+                    severity_level=severity_level,
+                    confidence=confidence,
+                    top_sensor=top_contributors[0]["sensor"] if top_contributors else "unknown",
+                    fused_score=fused_score,
+                    threshold=fused_threshold,
+                    tick=current_tick,
+                    dataset=DATASET,
+                ))
                 _record_anomaly_event(
                     tick=current_tick,
                     fused_score=fused_score,
@@ -2866,13 +2948,47 @@ async def websocket_endpoint(websocket: WebSocket):
                     investigation_hints=hints,
                     anomaly_source=anomaly_source_info,
                 )
-            
+
             await websocket.send_text(json.dumps(payload))
             current_tick += 1
             
     except WebSocketDisconnect:
         active_connections.remove(websocket)
         print("UI Client Disconnected")
+
+@app.post("/api/whatsapp/test")
+async def test_whatsapp_alert():
+    """Manually fire a test WhatsApp alert — useful for demos."""
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        return {"status": "error", "detail": "Twilio not configured. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in .env."}
+    if not TWILIO_TO_NUMBERS:
+        return {"status": "error", "detail": "No recipients. Check TWILIO_TO_WHATSAPP in .env."}
+    # Bypass cooldown for test calls
+    global _twilio_last_sent_ts
+    _twilio_last_sent_ts = 0.0
+    await _send_whatsapp_alert(
+        anomaly_type="collective_anomaly",
+        severity_level="critical",
+        confidence=0.983,
+        top_sensor="s22",
+        fused_score=2.871,
+        threshold=1.500,
+        tick=9999,
+        dataset=DATASET,
+    )
+    return {"status": "test_sent", "recipients": TWILIO_TO_NUMBERS}
+
+@app.get("/api/whatsapp/status")
+async def whatsapp_status():
+    """Returns Twilio configuration status (no secrets exposed)."""
+    return {
+        "configured": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),
+        "recipient_count": len(TWILIO_TO_NUMBERS),
+        "from_number": TWILIO_FROM_WHATSAPP,
+        "cooldown_sec": TWILIO_COOLDOWN,
+        "min_severity": TWILIO_MIN_SEV,
+        "last_sent_ts": _twilio_last_sent_ts,
+    }
 
 @app.get("/")
 def read_root():

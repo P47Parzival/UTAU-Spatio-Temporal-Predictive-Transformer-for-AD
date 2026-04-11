@@ -104,6 +104,7 @@ export function GovernancePanel({ systemState, isSubmitting, feedbackStatus, onA
   onAcknowledge: () => void; onDismiss: () => void;
 }) {
   const isHealthy = systemState === 'HEALTHY';
+
   return (
     <div className="panel" style={{ flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>

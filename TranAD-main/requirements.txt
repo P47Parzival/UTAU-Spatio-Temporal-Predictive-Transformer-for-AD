@@ -14,3 +14,4 @@ pydantic
 requests
 aiokafka
 influxdb-client
+twilio>=9.0.0
