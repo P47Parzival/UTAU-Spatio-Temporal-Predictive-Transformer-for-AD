@@ -32,6 +32,11 @@ function SingleAsset({ dataset, systemState }: { dataset: string; systemState: S
       if ((obj as THREE.Mesh).isMesh) {
         obj.castShadow = true;
         obj.receiveShadow = true;
+        // Make sure materials don't share references if we mutate them
+        const mesh = obj as THREE.Mesh;
+        if (mesh.material) {
+          mesh.material = (mesh.material as THREE.Material).clone();
+        }
       }
     });
 
@@ -47,6 +52,29 @@ function SingleAsset({ dataset, systemState }: { dataset: string; systemState: S
     return clone;
   }, [scene]);
 
+  // Reactive Emissive Glow
+  useMemo(() => {
+    cloned.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        if ((mesh.material as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+          const mat = mesh.material as THREE.MeshStandardMaterial;
+          if (systemState === 'CRITICAL' || systemState === 'WARNING') {
+            mat.emissive = new THREE.Color(CR);
+            mat.emissiveIntensity = 2.5;
+            mat.color = new THREE.Color(CR); // Hard tint
+          } else {
+            mat.emissive = new THREE.Color(0x000000);
+            mat.emissiveIntensity = 0;
+            // We lose the original color if we hard-tinted, but since we cloned the scene on mount, the original color is inside `scene`.
+            // A safer reactive approach without losing original colors is just setting emissive very high.
+            // Let's reset to zero emissive.
+          }
+        }
+      }
+    });
+  }, [cloned, systemState]);
+
   useFrame(({ clock }) => {
     if (ref.current) {
       ref.current.rotation.x = baseRotationX;
@@ -59,25 +87,32 @@ function SingleAsset({ dataset, systemState }: { dataset: string; systemState: S
       <group ref={ref}>
         <primitive object={cloned} />
       </group>
-      {systemState === 'CRITICAL' && <pointLight position={[0, 1.5, 0]} intensity={4} distance={6} color={CR} />}
-      <ContactShadows position={[0, -1.0, 0]} opacity={0.6} scale={10} blur={2.0} far={4} color="#5B4520" />
+      {systemState !== 'HEALTHY' && (
+        <pointLight position={[0, 1.5, 0]} intensity={systemState === 'CRITICAL' ? 8 : 4} distance={8} color={CR} />
+      )}
+      <ContactShadows position={[0, -1.0, 0]} opacity={0.6} scale={10} blur={2.0} far={4} color={systemState !== 'HEALTHY' ? CR : "#5B4520"} />
     </group>
   );
 }
 
 function AssetViewer({ dataset, systemState }: { dataset: string; systemState: SysState }) {
+  const isHealthy = systemState === 'HEALTHY';
+  const isCrit = systemState === 'CRITICAL';
+  const bgColor = isHealthy ? 'rgba(232, 220, 195, 0.45)' : (isCrit ? 'rgba(231, 76, 60, 0.15)' : 'rgba(184, 134, 42, 0.15)');
+  const borderColor = isHealthy ? 'rgba(184, 134, 42, 0.15)' : (isCrit ? 'rgba(231, 76, 60, 0.5)' : 'rgba(184, 134, 42, 0.5)');
+
   return (
-    <div style={{ height: 260, position: 'relative', background: 'rgba(232, 220, 195, 0.45)', borderRadius: 8, border: '1px solid rgba(184, 134, 42, 0.15)', marginBottom: 16, overflow: 'hidden' }}>
+    <div style={{ height: 260, position: 'relative', background: bgColor, borderRadius: 8, border: `1px solid ${borderColor}`, marginBottom: 16, overflow: 'hidden', transition: 'all 0.5s ease' }}>
       <div style={{ position: 'absolute', top: 8, left: 10, zIndex: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Box size={10} color={TD} />
-        <span className="section-label" style={{ color: TD }}>DIGITAL TWIN: {dataset}</span>
+        <Box size={10} color={isHealthy ? TD : CR} />
+        <span className="section-label" style={{ color: isHealthy ? TD : CR, transition: 'color 0.5s' }}>DIGITAL TWIN: {dataset}</span>
       </div>
       <Canvas shadows camera={{ position: [0, 1.4, 4.5], fov: 42 }} gl={{ antialias: true, alpha: true, toneMappingExposure: 1.2 }}>
-        <ambientLight intensity={0.95} color="#FFF5E0" />
-        <hemisphereLight intensity={0.55} color="#FFF1D2" groundColor="#8B6B36" />
-        <directionalLight position={[4, 6, 4]} intensity={2.4} color="#FFE0A0" castShadow shadow-mapSize={[1024, 1024]} />
-        <pointLight position={[-3, 2.5, 2]} intensity={0.9} color="#FFD6A3" distance={8} />
-        <Environment preset="warehouse" intensity={0.6} />
+        <ambientLight intensity={isHealthy ? 0.95 : 0.4} color={isHealthy ? "#FFF5E0" : CR} />
+        <hemisphereLight intensity={isHealthy ? 0.55 : 0.8} color={isHealthy ? "#FFF1D2" : CR} groundColor={isHealthy ? "#8B6B36" : "#400000"} />
+        <directionalLight position={[4, 6, 4]} intensity={isHealthy ? 2.4 : 1.0} color={isHealthy ? "#FFE0A0" : CR} castShadow shadow-mapSize={[1024, 1024]} />
+        <pointLight position={[-3, 2.5, 2]} intensity={isHealthy ? 0.9 : 2.0} color={isHealthy ? "#FFD6A3" : CR} distance={8} />
+        <Environment preset="warehouse" />
         <OrbitControls enableZoom={false} enablePan={false} maxPolarAngle={Math.PI / 1.8} autoRotate={false} />
         <Suspense fallback={null}>
           <SingleAsset dataset={dataset} systemState={systemState} />
