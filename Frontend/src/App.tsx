@@ -6,7 +6,7 @@ import autoTable from 'jspdf-autotable';
 import { UtauHeader }  from './components/Header';
 import TopologyPanel    from './components/TopologyPanel';
 import { HeroSection, ResidualSection } from './components/CenterPanel';
-import { IncidentReport, RootCausePanel, SimilarIncidents, GovernancePanel } from './components/RightPanel';
+import { PredictiveRULPanel, RootCausePanel, SimilarIncidents, GovernancePanel } from './components/RightPanel';
 import AnomalySourceTab from './components/AnomalySourceTab';
 import DataSourceTab from './components/DataSourceTab';
 import LandingPage from './LandingPage';
@@ -177,7 +177,8 @@ export default function App() {
           if (!hasAlertedRef.current) {
             hasAlertedRef.current = true;
             const type = payload.alert_explanation?.anomaly_type || 'unauthorized_deviation';
-            setAnomalyPopup({ show: true, msg: `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`, dataset: activeDataset });
+            const rul_msg = payload.alert_explanation?.rul_status || `CRITICAL DEVIATION [${type.toUpperCase()}] DETECTED`;
+            setAnomalyPopup({ show: true, msg: rul_msg, dataset: activeDataset });
             // Auto-dismiss after 4 seconds
             if (anomalyPopupTimerRef.current !== null) {
               window.clearTimeout(anomalyPopupTimerRef.current);
@@ -374,7 +375,7 @@ export default function App() {
 
           {/* RIGHT: Incident & Governance */}
           <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden' }}>
-            <IncidentReport alertExplanation={alertExplanation} activeDataset={activeDataset} />
+            <PredictiveRULPanel alertExplanation={alertExplanation} activeDataset={activeDataset} />
             <RootCausePanel alertExplanation={alertExplanation} />
             <SimilarIncidents alertExplanation={alertExplanation} />
             <GovernancePanel systemState={systemState} isSubmitting={isSubmittingFeedback} feedbackStatus={feedbackStatus} onAcknowledge={acknowledgeAlert} onDismiss={dismissAlarm} />

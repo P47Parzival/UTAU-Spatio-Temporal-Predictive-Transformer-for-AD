@@ -3307,6 +3307,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         l = nn.MSELoss(reduction='none')
         current_tick = 0
+        recent_fused_scores = deque(maxlen=100)
         
         while True:
             # Wait for dynamic data to arrive in ingestion buffer
@@ -3339,7 +3340,35 @@ async def websocket_endpoint(websocket: WebSocket):
             corr_shift = _correlation_shift_score(np.asarray(history_window, dtype=np.float64))
             fused_score, fused_threshold = _compute_fused_score(recon_loss, forecast_loss, corr_shift)
             _update_drift_state()
+            recent_fused_scores.append(float(fused_score))
+
+            degradation_velocity = 0.0
+            predicted_ttf_ticks = -1
+            rul_status = "NOMINAL (Stable Timeline)"
+
+            if len(recent_fused_scores) >= 10:
+                y = np.array(recent_fused_scores)
+                x = np.arange(len(y))
+                # Linear extrapolation
+                slope, _ = np.polyfit(x, y, 1)
+                degradation_velocity = float(slope)
+                
+                rul_status = f"NOMINAL (Deviation vel: {degradation_velocity:+.4f}/tick)"
+                
+                critical_threshold = fused_threshold * 2.0 
+                if slope > 0.00001:
+                    predicted_ttf_ticks = max(1, int((critical_threshold - float(fused_score)) / slope))
+
             is_anomalous = fused_score > fused_threshold
+            
+            if is_anomalous:
+                if degradation_velocity > 0.005:
+                    rul_status = f"IMPEDING FAILURE! Velocity {degradation_velocity:.3f}. RUL: ~{predicted_ttf_ticks} ticks (mins)."
+                elif degradation_velocity > 0.0001:
+                    rul_status = f"DETERIORATING. Velocity {degradation_velocity:.4f}. RUL: ~{predicted_ttf_ticks} ticks (mins)."
+                else:
+                    rul_status = "ANOMALOUS SIG (Velocity flattened. Standby.)"
+
             if is_anomalous:
                 anomaly_streak += 1
             else:
@@ -3414,6 +3443,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "top_contributors": top_contributors,
                     "historical_similar": similar_history,
                     "investigation_hints": hints,
+                    "degradation_velocity": degradation_velocity,
+                    "predicted_ttf": predicted_ttf_ticks,
+                    "rul_status": rul_status,
                 },
             }
 
