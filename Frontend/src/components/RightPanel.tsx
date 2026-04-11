@@ -152,18 +152,25 @@ export interface AlertExplanation {
   top_contributors: { sensor: string; contribution_pct: number }[];
   historical_similar: { tick: number; dataset: string; summary: string; similarity?: number }[];
   investigation_hints: string[];
+  degradation_velocity?: number;
+  predicted_ttf?: number;
+  rul_status?: string;
 }
 
-export function IncidentReport({ alertExplanation }: { alertExplanation: AlertExplanation | null; activeDataset: string }) {
+export function PredictiveRULPanel({ alertExplanation }: { alertExplanation: AlertExplanation | null; activeDataset: string }) {
   const isCrit = alertExplanation?.severity_level === 'critical';
   const color  = isCrit ? CR : alertExplanation ? CU : TD;
+  
+  const velocity = alertExplanation?.degradation_velocity || 0;
+  const ttf = alertExplanation?.predicted_ttf || 0;
+  const rul_directive = alertExplanation?.rul_status || "Awaiting signature analysis...";
 
   return (
     <div className="panel" style={{ flexShrink: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Target size={11} color={color} />
-          <span className="section-label" style={{ color }}>INCIDENT REPORT</span>
+          <span className="section-label" style={{ color }}>PREDICTIVE RUL INTELLIGENCE</span>
         </div>
         {alertExplanation && (
           <div style={{ fontFamily: "'Cinzel', serif", fontSize: 7, fontWeight: 700, color, padding: '2px 8px', borderRadius: 20, border: `1px solid ${color}40`, background: `${color}10`, letterSpacing: '0.18em', animation: isCrit ? 'golden-breathe 1s infinite' : 'none' }}>
@@ -171,17 +178,29 @@ export function IncidentReport({ alertExplanation }: { alertExplanation: AlertEx
           </div>
         )}
       </div>
-      <div className="panel-recessed" style={{ margin: 10, padding: '10px 12px', maxHeight: 110, overflowY: 'auto' }}>
-        {!alertExplanation ? (
-          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 12, color: TD, fontStyle: 'italic' }}>awaiting event signal…</span>
+      <div className="panel-recessed" style={{ margin: 10, padding: '12px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {!isCrit && !alertExplanation?.predicted_ttf ? (
+          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 13, color: TD, fontStyle: 'italic', textAlign: 'center' }}>{rul_directive}</span>
         ) : (
-          <pre style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: TS, margin: 0, whiteSpace: 'pre-wrap' }}>
-            <span style={{ color: G }}>{'{'}</span>{'\n'}
-            {'  '}<span style={{ color: '#8B6020' }}>"type"</span>: <span style={{ color: CU }}>"{alertExplanation.anomaly_type}"</span>,{'\n'}
-            {'  '}<span style={{ color: '#8B6020' }}>"confidence"</span>: <span style={{ color: G }}>"{(alertExplanation.confidence * 100).toFixed(1)}%"</span>,{'\n'}
-            {'  '}<span style={{ color: '#8B6020' }}>"duration"</span>: <span style={{ color: G }}>{alertExplanation.duration_steps} steps</span>{'\n'}
-            <span style={{ color: G }}>{'}'}</span>
-          </pre>
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 10, color: TS, fontFamily: "'JetBrains Mono', monospace" }}>TIME TO FAILURE</span>
+                <span style={{ fontSize: 10, color: CR, fontFamily: "'JetBrains Mono', monospace", animation: 'golden-breathe 1.5s infinite' }}>
+                  T-MINUS 00:{ttf.toString().padStart(2, '0')}:00
+                </span>
+              </div>
+              {/* Velocity Progress Bar representing threshold approach */}
+              <div style={{ width: '100%', height: 4, background: 'rgba(0,0,0,0.4)', borderRadius: 2, overflow: 'hidden', border: `1px solid ${CR}30` }}>
+                <div style={{ width: `${Math.min(100, Math.max(5, velocity * 10000))}%`, height: '100%', background: CR, transition: 'width 0.4s ease-out' }} />
+              </div>
+            </div>
+            <div style={{ background: 'rgba(231,76,60,0.05)', borderLeft: `2px solid ${CR}`, padding: '6px 10px' }}>
+              <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 14, color: TP, lineHeight: 1.3 }}>
+                {rul_directive}
+              </span>
+            </div>
+          </>
         )}
       </div>
     </div>
