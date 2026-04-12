@@ -9,3 +9,15 @@ set INFLUX_TOKEN=catch-dev-token
 set INFLUX_ORG=catch-org
 set INFLUX_BUCKET=catch-telemetry
 python server.py
+
+ESP32
+docker compose up -d kafka
+
+docker ps -a --filter name=catch-mosquitto
+
+docker logs --tail 50 catch-mosquitto
+>> netstat -ano | findstr :1883
+>> Test-NetConnection 127.0.0.1 -Port 1883
+>> Test-NetConnection 10.59.244.11 -Port 1883
+
+python .\esp32_mqtt_kafka_bridge.py --mqtt-host 127.0.0.1 --mqtt-port 1883 --mqtt-topic esp32/telemetry --kafka-bootstrap-servers 127.0.0.1:29092 --kafka-topic telemetry-stream --dataset ESP32 --expected-dimensions 64

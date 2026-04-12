@@ -9,7 +9,7 @@
       "dataset": "ESP32",
       "expected_dimensions": 64,
       "enabled": true,
-      "is_active": true,
+      "is_active": false,
       "notes": null,
       "mapping": {
         "timestamp_path": "timestamp_ms",
@@ -17,7 +17,7 @@
       },
       "auth": {},
       "created_at_ms": 1775868056907,
-      "updated_at_ms": 1775879942083
+      "updated_at_ms": 1775954438478
     },
     {
       "id": 2,
@@ -37,8 +37,46 @@
       "auth": {},
       "created_at_ms": 1775869210884,
       "updated_at_ms": 1775869211183
+    },
+    {
+      "id": 3,
+      "name": "Test sensor3",
+      "protocol": "kafka",
+      "endpoint": "127.0.0.1:29092",
+      "topic": "telemetry-stream",
+      "dataset": "synthetic",
+      "expected_dimensions": 64,
+      "enabled": true,
+      "is_active": false,
+      "notes": null,
+      "mapping": {
+        "timestamp_path": "timestamp_ms",
+        "vector_path": "sensors"
+      },
+      "auth": {},
+      "created_at_ms": 1775953066677,
+      "updated_at_ms": 1775953066677
+    },
+    {
+      "id": 4,
+      "name": "Test sensor4",
+      "protocol": "http",
+      "endpoint": "127.0.0.1:29092",
+      "topic": "telemetry-stream",
+      "dataset": "synthetic",
+      "expected_dimensions": 64,
+      "enabled": true,
+      "is_active": true,
+      "notes": null,
+      "mapping": {
+        "timestamp_path": "timestamp_ms",
+        "vector_path": "sensors"
+      },
+      "auth": {},
+      "created_at_ms": 1775955362304,
+      "updated_at_ms": 1775955362304
     }
   ],
-  "next_id": 3,
-  "updated_at_ms": 1775879942083
+  "next_id": 5,
+  "updated_at_ms": 1775955362304
 }
